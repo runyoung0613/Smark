@@ -31,7 +31,52 @@ Android 专属学习阅读工具。
       首页的交互页
    复习页
 
-## 3.版本说明
+## 3.架构设计
+
+smark-app/
+├── app/                        # Expo Router 页面
+│   ├── _layout.tsx             # 根布局
+│   ├── (tabs)/                 # 底部 Tab 导航组
+│   │   ├── _layout.tsx
+│   │   ├── index.tsx           # 首页（文章列表）
+│   │   ├── review.tsx          # 复习页
+│   │   └── profile.tsx         # 个人页
+│   ├── import.tsx              # 导入页
+│   ├── read/
+│   │   └── [id].tsx            # 阅读页（动态路由）
+│   ├── summary/
+│   │   └── [id].tsx            # AI 总结页
+│   └── highlights/
+│       └── [id].tsx            # 本文划线页
+├── components/
+│   ├── ui/                     # 通用 UI 组件
+│   │   ├── Button.tsx
+│   │   ├── Card.tsx
+│   │   ├── Badge.tsx
+│   │   ├── Toast.tsx
+│   │   └── Spinner.tsx
+│   └── features/               # 业务组件
+│       ├── ArticleCard.tsx
+│       ├── HighlightItem.tsx
+│       ├── SummaryPoint.tsx
+│       └── ReviewCard.tsx
+├── hooks/
+│   ├── useArticles.ts          # 文章数据 hook
+│   ├── useReview.ts            # 复习逻辑 hook
+│   └── useAI.ts                # AI 摘要 hook
+├── stores/                     # Zustand 状态
+│   ├── articleStore.ts         # 文章 + 划线状态
+│   └── reviewStore.ts          # 复习进度状态
+├── services/
+│   ├── storage.ts              # AsyncStorage 封装
+│   ├── article.ts              # 文章解析服务
+│   └── openai.ts               # AI 摘要 API
+├── constants/
+│   └── theme.ts                # 颜色/字体/间距常量
+└── types/
+    └── index.ts                # TypeScript 类型定义
+
+## 4.版本说明
 
 x.y.z，x为重大架构变更，y为功能新增，z为bug修复。
 main为主分支，稳定可发布
