@@ -30,9 +30,9 @@ export default function ReviewScreen() {
       const nextItems: ReviewItem[] = [
         ...highlightsAll.map((h) => {
           const sourceTitle = articles.find((a) => a.id === h.article_id)?.title ?? '文章';
-          return { kind: 'highlight', id: h.id, text: h.quote, sourceTitle };
+          return { kind: 'highlight' as const, id: h.id, text: h.quote, sourceTitle };
         }),
-        ...quicks.map((q) => ({ kind: 'quick', id: q.id, text: q.front, sourceTitle: '快速导入' as const })),
+        ...quicks.map((q) => ({ kind: 'quick' as const, id: q.id, text: q.front, sourceTitle: '快速导入' as const })),
       ];
 
       if (!cancelled) {

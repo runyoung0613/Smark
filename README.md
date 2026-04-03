@@ -1,85 +1,78 @@
 # Smark / 阅记
 
-产品名称：阅记/Smark
+面向 **Android** 的离线优先阅读与划线工具：导入长文 → 在阅读器中标注 → 用随机卡片复习关键句（含不挂文章的「一句话」卡片）。云端登录与同步在本地闭环稳定后再接入。
 
-## 1.页面布局
+---
 
-[墨刀制作的思维导图](https://modao.cc/board/share/XwaixF2CtcozzdfpHnRdb)
-核心功能涉及
+## 整体框架构思
 
-### UI设计
+### 产品边界（MVP）
 
-AI在线生成平台
-对于小白，AIUI设计只能提供页面相关的布局方向，真正的页面交互还是需要自己在专业的UI交互软件进行搭建，可控性更高，因为这样才能更好地逻辑自洽。下面进行专业打分，满分10分
-1、[Stitch](https://stitch.withgoogle.com/projects/17313191523047679250) //能够修改，针对这个项目，美学效果较高。9
-2、[Lovart](https://www.lovart.ai/canvas?utm_source=index&utm_campaign=1&projectId=c4516b13b11a45bb8615c89e59d5a8f5) //AI生成有积分限制，美学效果一般。8
-3、[lovable](https://lovable.dev/projects/b24fe8fb-354d-444d-841a-daf5132403df) //每天应该是10美元的限制，出代码交互还行，美学效果高于lovart。9
-*最终是结合lovable给出了一个较为满意的页面逻辑。
-4、[墨刀原型](https://modao.cc/proto/Eif4tWiptcg5a3liDrdGyz/sharing?view_mode=read_only&screen=rbpVErmSRVAZwsjnF) //AI积分限制，且没做出交互原型，后续所有的交互原型设计均在墨刀原型中进行。8
-⚠️所有页面均为Android原生风格,适配手机竖屏，具体内容见墨刀原型。
+- **先做通本地闭环**：不依赖网络即可导入、阅读、划线、列表管理、随机复习。
+- **阅读与划线**：用 **WebView + HTML** 渲染正文，选区映射回原文 `start/end` 写入 SQLite，保证与纯文本索引一致。
+- **复习**：不做间隔重复算法；卡片池 = 全部划线句 + Quick Card。
+- **隐私**：MVP 阶段数据仅存本机、不加密；同步阶段再考虑加密与账号模型。
 
-## 2.核心功能
+### 技术栈（选型理由）
 
-1.0功能
-1、文章搜集，网页内容导入。
-2、卡片记忆，长按文本划线，标记关键知识点，卡片展示。
-Android 专属学习阅读工具。
-1.0涉及的核心页面。
-   导入页-手动输入页
-   首页
-      首页的阅读页
-      首页的交互页
-   复习页
+| 层级 | 选择 | 作用 |
+|------|------|------|
+| 应用框架 | Expo（SDK 54） | 单代码库、真机调试成本低 |
+| 路由 | Expo Router | 文件即路由，与页面范围一一对应 |
+| 主数据 | `expo-sqlite` | 离线主库、结构便于后续增量同步 |
+| 阅读器 | `react-native-webview` | 选区、荧光笔样式、与 RN 消息桥 |
+| UI 状态 | 本地 `useState` / 可选 Zustand | 不以全局 store 替代 SQLite 真相源 |
 
-## 3.架构设计
+### 架构原则
 
-smark-app/
-├── app/                        # Expo Router 页面
-│   ├── _layout.tsx             # 根布局
-│   ├── (tabs)/                 # 底部 Tab 导航组
-│   │   ├── _layout.tsx
-│   │   ├── index.tsx           # 首页（文章列表）
-│   │   ├── review.tsx          # 复习页
-│   │   └── profile.tsx         # 个人页
-│   ├── import.tsx              # 导入页
-│   ├── read/
-│   │   └── [id].tsx            # 阅读页（动态路由）
-│   ├── summary/
-│   │   └── [id].tsx            # AI 总结页
-│   └── highlights/
-│       └── [id].tsx            # 本文划线页
-├── components/
-│   ├── ui/                     # 通用 UI 组件
-│   │   ├── Button.tsx
-│   │   ├── Card.tsx
-│   │   ├── Badge.tsx
-│   │   ├── Toast.tsx
-│   │   └── Spinner.tsx
-│   └── features/               # 业务组件
-│       ├── ArticleCard.tsx
-│       ├── HighlightItem.tsx
-│       ├── SummaryPoint.tsx
-│       └── ReviewCard.tsx
-├── hooks/
-│   ├── useArticles.ts          # 文章数据 hook
-│   ├── useReview.ts            # 复习逻辑 hook
-│   └── useAI.ts                # AI 摘要 hook
-├── stores/                     # Zustand 状态
-│   ├── articleStore.ts         # 文章 + 划线状态
-│   └── reviewStore.ts          # 复习进度状态
-├── services/
-│   ├── storage.ts              # AsyncStorage 封装
-│   ├── article.ts              # 文章解析服务
-│   └── openai.ts               # AI 摘要 API
-├── constants/
-│   └── theme.ts                # 颜色/字体/间距常量
-└── types/
-    └── index.ts                # TypeScript 类型定义
+1. **离线优先**：读写先落 SQLite；同步（M3）只做增量与冲突策略，不改变「本机即主库」的心智。
+2. **同步友好字段**：表中带 `created_at` / `updated_at` / `deleted_at`，为 LWW 与软删预留。
+3. **前后阶段解耦**：M1 只做本地；M2 Auth；M3 Postgres + RLS + push/pull，避免早期反复迁移。
 
-## 4.版本说明
+### 里程碑（摘要）
 
-x.y.z，x为重大架构变更，y为功能新增，z为bug修复。
-main为主分支，稳定可发布
-develop为开发分支，可能存在bug。
-feature为特性分支，开发新功能，可能存在bug。
-fix为bug修复分支。
+- **M1**：本地 SQLite + 导入 → 阅读 → 划线 → 划线列表 → 随机复习（含 Quick Card）。
+- **M2**：Supabase 邮箱 OTP，Profile 登录/退出。
+- **M3**：增量同步、软删除、Last-Write-Wins。
+
+各页功能细节、数据表与实现差异、待办项见 **[claude.md](./claude.md)**。
+
+---
+
+## 仓库结构（与当前代码一致）
+
+```text
+Smark/
+├── claude.md              # 任务级说明与规划（详）
+├── README.md              # 框架与入口（略）
+└── smark-app/             # Expo 工程
+    ├── app/
+    │   ├── _layout.tsx
+    │   ├── import.tsx
+    │   ├── read/[id].tsx
+    │   ├── highlights/[id].tsx
+    │   └── (tabs)/        # index · review · profile
+    ├── services/
+    │   └── db.ts          # SQLite 初始化与 CRUD
+    ├── App.tsx            # 占位（实际入口为 expo-router/entry）
+    ├── app.json
+    └── package.json
+```
+
+---
+
+## 设计与原型（参考）
+
+- [墨刀思维导图](https://modao.cc/board/share/XwaixF2CtcozzdfpHnRdb)
+- [墨刀交互原型](https://modao.cc/proto/Eif4tWiptcg5a3liDrdGyz/sharing?view_mode=read_only&screen=rbpVErmSRVAZwsjnF)（Android 竖屏、原生风格）
+- UI 探索记录（Stitch / Lovart / Lovable 等）可归档在 `claude.md` 或团队笔记；产品实现以当前仓库与 `claude.md` 为准。
+
+---
+
+## 版本与分支（约定）
+
+语义化版本 `x.y.z`：`x` 重大架构变更，`y` 功能新增，`z` 修复。
+
+- `main`：稳定可发布  
+- `develop`：集成开发  
+- `feature/*`、`fix/*`：特性与修复分支  
