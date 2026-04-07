@@ -1,11 +1,12 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, FlatList, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import {
   DbHighlight,
   deleteHighlight,
   getArticle,
   listHighlights,
+  updateHighlightInReview,
   updateHighlightNote,
 } from '../../services/db';
 
@@ -54,9 +55,17 @@ export default function HighlightsScreen() {
     await refresh();
   }
 
+  async function onToggleReview(h: DbHighlight, inReview: boolean) {
+    await updateHighlightInReview({ id: h.id, inReview });
+    await refresh();
+  }
+
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title: `划线 · ${title}` }} />
+      <Text style={styles.hint}>
+        打开「加入复习」后，该句会进入「复习」Tab 的划线复习区；新建划线默认不加入。
+      </Text>
 
       <FlatList
         data={highlights}
@@ -64,6 +73,13 @@ export default function HighlightsScreen() {
         contentContainerStyle={highlights.length ? undefined : styles.emptyContainer}
         renderItem={({ item }) => (
           <View style={styles.card}>
+            <View style={styles.reviewRow}>
+              <Text style={styles.reviewLabel}>加入复习</Text>
+              <Switch
+                value={item.in_review === 1}
+                onValueChange={(v) => onToggleReview(item, v)}
+              />
+            </View>
             <Text style={styles.quote}>{item.quote}</Text>
             {item.note ? <Text style={styles.note}>备注：{item.note}</Text> : null}
 
@@ -97,7 +113,9 @@ export default function HighlightsScreen() {
             )}
           </View>
         )}
-        ListEmptyComponent={<Text style={styles.emptyText}>还没有划线，在阅读页选中文字即可高亮。</Text>}
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>还没有划线。在阅读页选中文字后点「划线」。</Text>
+        }
       />
     </View>
   );
@@ -105,6 +123,17 @@ export default function HighlightsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff', padding: 16 },
+  hint: { color: '#6b7280', fontSize: 13, lineHeight: 19, marginBottom: 12 },
+  reviewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  reviewLabel: { fontWeight: '700', color: '#374151', fontSize: 14 },
   card: {
     borderWidth: 1,
     borderColor: '#e5e7eb',

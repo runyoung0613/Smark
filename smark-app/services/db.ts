@@ -22,6 +22,8 @@ export type DbHighlight = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  /** 1 = 进入划线复习池；新建默认为 0 */
+  in_review: number;
 };
 
 export type DbQuickCard = {
@@ -79,6 +81,7 @@ export async function initDb() {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         deleted_at TEXT,
+        in_review INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY(article_id) REFERENCES articles(id) ON DELETE CASCADE
       );
 
@@ -93,8 +96,18 @@ export async function initDb() {
         deleted_at TEXT
       );
     `);
+    await migrateHighlightsInReviewColumn(db);
   })();
   return initPromise;
+}
+
+async function migrateHighlightsInReviewColumn(db: SQLite.SQLiteDatabase) {
+  const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(highlights)`);
+  if (!cols.some((c) => c.name === 'in_review')) {
+    await db.execAsync(
+      `ALTER TABLE highlights ADD COLUMN in_review INTEGER NOT NULL DEFAULT 0`
+    );
+  }
 }
 
 export async function createArticle(input: { title: string; content: string }) {
@@ -129,6 +142,27 @@ export async function getArticle(id: string): Promise<DbArticle | null> {
   return row ?? null;
 }
 
+export async function updateArticleContent(input: { id: string; content: string }) {
+  await initDb();
+  const db = await getDb();
+  const ts = nowIso();
+  await db.runAsync(`UPDATE articles SET content = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, [
+    input.content,
+    ts,
+    input.id,
+  ]);
+}
+
+export async function softDeleteAllHighlightsForArticle(articleId: string) {
+  await initDb();
+  const db = await getDb();
+  const ts = nowIso();
+  await db.runAsync(
+    `UPDATE highlights SET deleted_at = ?, updated_at = ? WHERE article_id = ? AND deleted_at IS NULL`,
+    [ts, ts, articleId]
+  );
+}
+
 export async function listHighlights(articleId: string): Promise<DbHighlight[]> {
   await initDb();
   const db = await getDb();
@@ -138,7 +172,24 @@ export async function listHighlights(articleId: string): Promise<DbHighlight[]> 
      ORDER BY start ASC`,
     [articleId]
   );
-  return rows;
+  return rows.map(normalizeHighlightRow);
+}
+
+function normalizeHighlightRow(row: DbHighlight): DbHighlight {
+  const v = row.in_review as unknown;
+  const ir = v === 1 || v === true ? 1 : 0;
+  return { ...row, in_review: ir };
+}
+
+export async function listReviewHighlights(): Promise<DbHighlight[]> {
+  await initDb();
+  const db = await getDb();
+  const rows = await db.getAllAsync<DbHighlight>(
+    `SELECT * FROM highlights
+     WHERE deleted_at IS NULL AND in_review = 1
+     ORDER BY updated_at DESC`
+  );
+  return rows.map(normalizeHighlightRow);
 }
 
 export async function createHighlight(input: {
@@ -153,11 +204,22 @@ export async function createHighlight(input: {
   const id = uuid();
   await db.runAsync(
     `INSERT INTO highlights
-      (id, article_id, start, end, quote, note, created_at, updated_at, deleted_at)
-     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, NULL)`,
+      (id, article_id, start, end, quote, note, created_at, updated_at, deleted_at, in_review)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, NULL, 0)`,
     [id, input.articleId, input.start, input.end, input.quote, ts, ts]
   );
   return id;
+}
+
+export async function updateHighlightInReview(input: { id: string; inReview: boolean }) {
+  await initDb();
+  const db = await getDb();
+  const ts = nowIso();
+  await db.runAsync(`UPDATE highlights SET in_review = ?, updated_at = ? WHERE id = ?`, [
+    input.inReview ? 1 : 0,
+    ts,
+    input.id,
+  ]);
 }
 
 export async function updateHighlightNote(input: { id: string; note: string }) {
