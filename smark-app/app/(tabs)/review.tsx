@@ -1,7 +1,14 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { createQuickCard, listArticles, listQuickCards, listReviewHighlights } from '../../services/db';
+import {
+  createQuickCard,
+  deleteHighlight,
+  deleteQuickCard,
+  listArticles,
+  listQuickCards,
+  listReviewHighlights,
+} from '../../services/db';
 
 type ReviewItem =
   | {
@@ -85,6 +92,33 @@ export default function ReviewScreen() {
     });
   }
 
+  function confirmDeleteCurrent(item: ReviewItem) {
+    const isHl = item.kind === 'highlight';
+    Alert.alert(
+      isHl ? '删除划线' : '删除 Quick Card',
+      isHl
+        ? '该句将从文章中移除划线，且不再出现在复习池。'
+        : '该卡片将从展示池移除，不可恢复。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              if (isHl) {
+                await deleteHighlight(item.highlightId);
+              } else {
+                await deleteQuickCard(item.id);
+              }
+              await refresh();
+            })();
+          },
+        },
+      ]
+    );
+  }
+
   async function addQuick() {
     const text = quickDraft.trim();
     if (!text) {
@@ -98,56 +132,69 @@ export default function ReviewScreen() {
   }
 
   return (
-    <ScrollView style={styles.scroll} contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-      <Text style={styles.title}>随机复习池</Text>
-      <Text style={styles.sub}>
-        从「已勾选复习的划线句子（可回原文定位）」与「Quick Card 展示板」合并随机抽取。
-      </Text>
+    <View style={styles.root}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
+      >
+        <Text style={styles.title}>随机复习池</Text>
+        <Text style={styles.sub}>
+          从「已勾选复习的划线句子（可回原文定位）」与「Quick Card 展示板」合并随机抽取。
+        </Text>
 
-      <View style={styles.card}>
-        {current ? (
-          <>
-            <Text style={styles.source}>
-              {current.sourceTitle}
-              {current.kind === 'highlight' ? '（划线）' : ''}
+        <View style={styles.card}>
+          {current ? (
+            <>
+              <Text style={styles.source}>
+                {current.sourceTitle}
+                {current.kind === 'highlight' ? '（划线）' : ''}
+              </Text>
+              <Text style={styles.text}>{current.text}</Text>
+              <View style={styles.cardActions}>
+                {current.kind === 'highlight' ? (
+                  <Pressable onPress={() => goReadHighlight(current)} style={styles.linkBtn}>
+                    <Text style={styles.linkBtnText}>回原文定位</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable onPress={() => confirmDeleteCurrent(current)} style={styles.deleteBtn}>
+                  <Text style={styles.deleteBtnText}>从复习池删除</Text>
+                </Pressable>
+              </View>
+            </>
+          ) : (
+            <Text style={styles.empty}>
+              暂无可展示内容：请在阅读页划线并在划线列表打开「加入复习」，或添加 Quick Card。
             </Text>
-            <Text style={styles.text}>{current.text}</Text>
-            {current.kind === 'highlight' ? (
-              <Pressable onPress={() => goReadHighlight(current)} style={styles.linkBtn}>
-                <Text style={styles.linkBtnText}>回原文定位</Text>
-              </Pressable>
-            ) : null}
-          </>
-        ) : (
-          <Text style={styles.empty}>
-            暂无可展示内容：请在阅读页划线并在划线列表打开「加入复习」，或添加 Quick Card。
-          </Text>
-        )}
-      </View>
+          )}
+        </View>
 
-      <Pressable onPress={nextRandom} disabled={!items.length} style={[styles.btn, !items.length && styles.btnDisabled]}>
-        <Text style={styles.btnText}>换一条</Text>
-      </Pressable>
+        <Pressable onPress={nextRandom} disabled={!items.length} style={[styles.btn, !items.length && styles.btnDisabled]}>
+          <Text style={styles.btnText}>换一条</Text>
+        </Pressable>
+      </ScrollView>
 
-      <View style={styles.quickBox}>
-        <Text style={styles.quickLabel}>添加 Quick Card（展示板）</Text>
+      <View style={styles.quickDock}>
+        <Text style={styles.quickLabel}>添加 Quick Card</Text>
         <TextInput
           value={quickDraft}
           onChangeText={setQuickDraft}
-          placeholder="例如：一个你想随手看到的句子"
+          placeholder="一个你想随手看到的句子"
           style={styles.input}
         />
         <Pressable onPress={addQuick} style={[styles.btn, { marginTop: 10 }]}>
           <Text style={styles.btnText}>加入展示池</Text>
         </Pressable>
       </View>
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  scroll: { flex: 1, backgroundColor: '#fff' },
-  container: { padding: 16, paddingBottom: 32 },
+  root: { flex: 1, backgroundColor: '#fff' },
+  scroll: { flex: 1 },
+  scrollContent: { padding: 16, paddingBottom: 12 },
   title: { fontSize: 22, fontWeight: '800', color: '#111827' },
   sub: { marginTop: 6, fontSize: 13, color: '#6b7280', lineHeight: 18 },
   card: {
@@ -162,8 +209,24 @@ const styles = StyleSheet.create({
   source: { color: '#6b7280', fontWeight: '700', marginBottom: 10 },
   text: { fontSize: 17, lineHeight: 26, color: '#111827', fontWeight: '700' },
   empty: { color: '#6b7280', textAlign: 'center', fontSize: 14 },
-  linkBtn: { marginTop: 14, alignSelf: 'flex-start' },
+  cardActions: {
+    marginTop: 14,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 10,
+  },
+  linkBtn: { alignSelf: 'flex-start' },
   linkBtnText: { color: '#2563eb', fontWeight: '800', fontSize: 15 },
+  deleteBtn: {
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    backgroundColor: '#fef2f2',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  deleteBtnText: { color: '#b91c1c', fontWeight: '800', fontSize: 14 },
   btn: {
     marginTop: 12,
     backgroundColor: '#111827',
@@ -173,7 +236,14 @@ const styles = StyleSheet.create({
   },
   btnDisabled: { opacity: 0.45 },
   btnText: { color: '#fff', fontWeight: '800' },
-  quickBox: { marginTop: 18, borderTopWidth: 1, borderTopColor: '#f3f4f6', paddingTop: 14 },
+  quickDock: {
+    borderTopWidth: 1,
+    borderTopColor: '#f3f4f6',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 16,
+    backgroundColor: '#fff',
+  },
   quickLabel: { fontWeight: '800', color: '#111827' },
   input: {
     marginTop: 10,

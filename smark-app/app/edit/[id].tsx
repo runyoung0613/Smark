@@ -1,14 +1,6 @@
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import {
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   getArticle,
   softDeleteAllHighlightsForArticle,
@@ -71,29 +63,30 @@ export default function EditArticleScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <>
       <Stack.Screen options={{ title: `矫正正文 · ${title || '…'}` }} />
+      <View style={styles.container}>
+        <Text style={styles.hint}>
+          用于修正导入乱码、错字等。保存且正文有变化时，会清除该文章下全部划线。
+        </Text>
 
-      <Text style={styles.hint}>
-        用于修正导入乱码、错字等。保存且正文有变化时，会清除该文章下全部划线。
-      </Text>
+        <ScrollView style={styles.scroll} keyboardShouldPersistTaps="handled">
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            multiline
+            editable={!loading}
+            placeholder="正文…"
+            style={styles.input}
+            textAlignVertical="top"
+          />
+        </ScrollView>
 
-      <ScrollView style={styles.scroll} keyboardShouldPersistTaps="handled">
-        <TextInput
-          value={draft}
-          onChangeText={setDraft}
-          multiline
-          editable={!loading}
-          placeholder="正文…"
-          style={styles.input}
-          textAlignVertical="top"
-        />
-      </ScrollView>
-
-      <Pressable onPress={save} style={[styles.btn, loading && styles.btnDisabled]} disabled={loading}>
-        <Text style={styles.btnText}>保存正文</Text>
-      </Pressable>
-    </View>
+        <Pressable onPress={save} style={[styles.btn, loading && styles.btnDisabled]} disabled={loading}>
+          <Text style={styles.btnText}>保存正文</Text>
+        </Pressable>
+      </View>
+    </>
   );
 }
 

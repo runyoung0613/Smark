@@ -153,6 +153,22 @@ export async function updateArticleContent(input: { id: string; content: string 
   ]);
 }
 
+/** 软删除文章及其下全部划线（复习池、列表等不再出现）。 */
+export async function softDeleteArticle(articleId: string) {
+  await initDb();
+  const db = await getDb();
+  const ts = nowIso();
+  await db.runAsync(
+    `UPDATE highlights SET deleted_at = ?, updated_at = ? WHERE article_id = ? AND deleted_at IS NULL`,
+    [ts, ts, articleId]
+  );
+  await db.runAsync(`UPDATE articles SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, [
+    ts,
+    ts,
+    articleId,
+  ]);
+}
+
 export async function softDeleteAllHighlightsForArticle(articleId: string) {
   await initDb();
   const db = await getDb();
@@ -264,5 +280,12 @@ export async function listQuickCards(): Promise<DbQuickCard[]> {
     `SELECT * FROM quick_cards WHERE deleted_at IS NULL ORDER BY updated_at DESC`
   );
   return rows;
+}
+
+export async function deleteQuickCard(id: string) {
+  await initDb();
+  const db = await getDb();
+  const ts = nowIso();
+  await db.runAsync(`UPDATE quick_cards SET deleted_at = ?, updated_at = ? WHERE id = ?`, [ts, ts, id]);
 }
 

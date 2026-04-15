@@ -1,92 +1,215 @@
 # Smark / 阅记
 
-**阅记（Smark）**：Android 侧重的本地优先阅读工具——导入文章、阅读时荧光笔划线；划线可进入随机复习；**Quick Card** 为随机**展示板**（刷新切换），当前不按「复习」能力设计（见 [`claude.md`](claude.md) §0.5）。
+Smark（阅记）一个 **本地优先（SQLite）** 的 Android 阅读工具
+具体功能
+1、导入文章、阅读划线把部分划线加入复习池，
+2、用户向AI提问，AI对所提问内容进行判断将提问知识加入复习池。
+复习池：Quick Card 随机展示，快速回看重点内容。
 
 ---
 
-## 项目规划与路线图
+## README 给谁看
 
-### 产品目标（MVP / 1.0）
+这份文档面向两类人：
 
-1. **导入**：手动标题 + 粘贴正文（先跑通闭环；网页剪藏等后续扩展）。
-2. **阅读**：可读、可配置字号与主题；划线为「荧光笔」式高亮（规划：长按选区弹出选项再划线，见 [`claude.md`](claude.md) §0）。
-3. **编辑（正文矫正）**：导入后可单独进入编辑，对正文人工纠错；**若保存时正文相对上次有变，提示后软删除本篇全部划线**（避免偏移错位），详见 [`claude.md`](claude.md) §0.2。
-4. **划线**：选区对应原文 `start/end` + `quote` 存库；列表支持备注、删除；**规划**：多选勾选后仅被选划线进入复习池（`in_review`）。
-5. **复习/展示（合并随机池）**：复习 Tab 将 **已勾选进入复习池的划线** 与 **Quick Card 展示板** 合并随机展示；抽到划线可 **回原文** 定位，抽到 Quick Card 仅展示文本；不做间隔重复算法（MVP）。见 [`claude.md`](claude.md) §0.4–§0.5。
-6. **Quick Card（展示板）**：Quick Card 仅用于展示，参与与划线同一随机池的展示抽取；不提供复习能力。见 [`claude.md`](claude.md) §0.5。
-7. **隐私**：MVP 阶段数据仅本地 SQLite，**不加密**；云端同步为后续阶段。
+- **项目使用者**：想知道 App 现在能做什么、怎么跑起来、怎么验证流程。
+- **新加入开发者**：第一次接手代码，想快速理解项目边界、当前进度、关键目录。
 
-### 里程碑
+文档分工：
 
-| 阶段 | 内容 | 状态 |
-|------|------|------|
-| **M1** | 本地闭环：SQLite、导入、阅读、划线、划线列表、划线复习、Quick Card 合并随机池展示 | **已完成主体**；待对齐 [`claude.md`](claude.md) §0（编辑正文与清空划线、`in_review`、回原文、随机池展示等） |
-| **M2** | Supabase Auth（邮箱 OTP）、Profile 登录/退出 | **规划中** |
-| **M3** | 云端备份与增量同步、软删除、Last-Write-Wins | **规划中** |
-
-### 技术方向（已定）
-
-- **客户端**：Expo（React Native）+ Expo Router；本地主库 **SQLite**（`expo-sqlite`）；阅读器 **WebView**（选区与渲染）；阅读偏好与滚动 **AsyncStorage**（见 `services/readerPrefs.ts`）。
-- **云端（M2/M3）**：Supabase Auth + Postgres + RLS；同步策略以 `updated_at`、软删除为基础。
-
-### 详细开发进度（给实现与 AI 用）
-
-**请以 [`claude.md`](claude.md) 为准**：其中按文件列出了当前已实现能力、已知限制、目录与依赖说明，并会随开发更新。
+- `README.md`：讲清楚项目是什么、怎么跑、现在到哪一步。
+- `claude.md`：讲清楚当前实现真值与后续规划，主要给协作者/AI 做开发对齐。
 
 ---
 
-## 仓库与运行方式
+## 1 分钟看懂项目
 
-### 实际目录结构（与代码一致）
+### 产品目标
 
-应用代码在子目录 **`smark-app/`**（仓库根目录下的 `README` / `claude.md` 为产品说明；**不要在根目录执行 `npm run start`**）。
+把“阅读 + 划线 + 回看”做成一个轻量闭环，优先保证本地可用，再逐步上云同步。
 
-```
-Smark/
-├── README.md                 # 本文件：规划与如何运行
-├── claude.md                 # 开发进度与实现细节（真值）
-└── smark-app/
-    ├── app/                  # Expo Router
-    │   ├── _layout.tsx
-    │   ├── (tabs)/           # 首页、复习、我的
-    │   ├── import.tsx
-    │   ├── read/[id].tsx
-    │   └── highlights/[id].tsx
-    ├── services/
-    │   ├── db.ts             # SQLite
-    │   └── readerPrefs.ts    # 阅读主题/字号/滚动
-    ├── package.json
-    └── ...
-```
+### 当前核心能力
 
-### 本地运行（Expo Go / 真机）
+- 文章导入：粘贴标题和正文后保存到本地 SQLite。
+- 阅读器：支持主题、字号切换和正文划线。
+- 划线管理：每条划线可单独“加入复习”（默认关闭）。
+- 复习池：`in_review=1` 的划线 + Quick Card 合并随机展示。
+- 矫正正文：正文改动保存时会清除本篇旧划线，避免偏移错位。
+
+### 明确边界（MVP）
+
+- 当前不做云同步、不做账号系统、不做加密。
+- Quick Card 是“展示板”，不是间隔重复卡片系统。
+
+---
+
+## 项目进度（截至当前仓库代码）
+
+| 阶段 | 目标 | 当前状态 |
+|---|---|---|
+| M1 | 本地闭环（导入→阅读→划线→划线列表→复习池） | 已完成主路径；仍有交互打磨项（写想法联动、搜索接入、减少 WebView 重载闪动） |
+| M2 | Supabase 邮箱 OTP 登录（Profile） | 未开始（Profile 仍为占位） |
+| M3 | 增量同步、软删除同步、LWW 冲突策略 | 未开始 |
+
+更细的实现细节与规划请看 `claude.md`。
+
+---
+
+## 快速上手（首次 10 分钟）
+
+### 1) 环境准备
+
+- Node.js 18+（建议 LTS）
+- npm 9+（或兼容版本）
+- Android 手机安装 `Expo Go`
+- 电脑可正常访问外网（跨网调试依赖 Expo Tunnel）
+
+### 2) 安装依赖（必须在 `smark-app` 目录）
 
 ```bash
 cd smark-app
 npm install
-# 若遇依赖 peer 冲突，可改用：npm install --legacy-peer-deps
-npx expo start
-# 手机与电脑不在同一 Wi-Fi 时：
+```
+
+如遇依赖冲突（`ERESOLVE`）：
+
+```bash
+npm install --legacy-peer-deps
+```
+
+### 3) 启动项目（你的手机和电脑不在同一网络时）
+
+```bash
+cd smark-app
 npx expo start --tunnel
 ```
 
-使用 **Expo Go** 扫描终端中的二维码；需保证 Expo Go 支持当前 **Expo SDK**（与 `smark-app/package.json` 中 `expo` 版本一致）。
+> 不同网络场景必须优先使用 `--tunnel`。  
+> 普通 `npx expo start`（LAN）通常要求手机和电脑在同一局域网。
 
 ---
 
-## 设计与原型（参考）
+## 跨网络真机预览（重点）
 
-- [墨刀思维导图](https://modao.cc/board/share/XwaixF2CtcozzdfpHnRdb)
-- 以下为历史选型记录，**不等价于当前仓库文件结构**（实现以 `smark-app/app` + `services` 为准）：
+你的条件是“电脑和手机不在同一网络”，按下面做：
 
-**UI 工具与原型（摘录）**
+1. 在电脑项目目录执行：
+   ```bash
+   cd smark-app
+   npx expo start --tunnel
+   ```
+2. 等待终端出现 `Tunnel ready` / 二维码。
+3. 手机打开 `Expo Go`。
+4. 推荐方式：**电脑和手机登录同一个 Expo 账号**（比纯扫码更稳，跨网成功率更高）。
+5. 在 Expo Go 的项目列表中打开当前项目；也可以直接扫描二维码尝试进入。
+6. 首次加载可能较慢，等待打包完成后进入 App。
 
-- [Stitch](https://stitch.withgoogle.com/projects/17313191523047679250)、[Lovart](https://www.lovart.ai/canvas)、[Lovable](https://lovable.dev/projects/b24fe8fb-354d-444d-841a-daf5132403df)、[墨刀原型](https://modao.cc/proto/Eif4tWiptcg5a3liDrdGyz/sharing?view_mode=read_only&screen=rbpVErmSRVAZwsjnD)  
-- 目标：**Android 竖屏**风格；具体交互以可运行 App 与 `claude.md` 为准。
+### 跨网络建议
+
+- 网络波动时先等 20~60 秒，不要频繁重复点开项目。
+- 如果卡死在 connecting，先在电脑终端 `Ctrl + C`，重新执行 `npx expo start --tunnel`。
+- 必要时加清缓存：
+  ```bash
+  npx expo start --tunnel -c
+  ```
+- 如果公司网络限制较多，换一个更稳定网络（如手机热点）再试。
 
 ---
 
-## 版本与分支（约定）
+## 如何确认你看到的是“项目成果”
 
-- 版本号 `x.y.z`：`x` 重大架构，`y` 功能，`z` 修复。
-- `main`：稳定；`develop`：开发；`feature/*`、`fix/*`：特性与修复分支。
+进入 App 后按以下路径点一遍：
+
+1. 首页 → 右上角“导入”。
+2. 输入标题和正文 → “保存并阅读”。
+3. 阅读页选中文字并划线。
+4. 打开“列表”，把该划线“加入复习”开关打开。
+5. 切到“复习”Tab，确认能抽到该划线。
+6. 在复习页添加一条 Quick Card，再次“换一条”，确认可抽到展示板条目。
+7. 回到阅读页点“矫正”，改正文并保存，确认旧划线被清除。
+
+这条链路完整通过，就代表 M1 主路径已跑通。
+
+---
+
+## 目录与关键文件（新开发者必看）
+
+可运行应用在 `smark-app/`：
+
+```text
+Smark/
+├── README.md
+├── claude.md
+└── smark-app/
+    ├── app/
+    │   ├── _layout.tsx
+    │   ├── (tabs)/index.tsx
+    │   ├── (tabs)/review.tsx
+    │   ├── (tabs)/profile.tsx
+    │   ├── import.tsx
+    │   ├── read/[id].tsx
+    │   ├── edit/[id].tsx
+    │   └── highlights/[id].tsx
+    ├── services/db.ts
+    ├── services/readerPrefs.ts
+    ├── app.json
+    └── package.json
+```
+
+常见改动入口：
+
+- 阅读交互/高亮逻辑：`smark-app/app/read/[id].tsx`
+- 复习池规则：`smark-app/app/(tabs)/review.tsx`
+- 数据结构与迁移：`smark-app/services/db.ts`
+- 阅读偏好与滚动恢复：`smark-app/services/readerPrefs.ts`
+
+---
+
+## 常见问题排查
+
+### 1) `ERESOLVE` 安装失败
+
+使用：
+
+```bash
+npm install --legacy-peer-deps
+```
+
+### 2) `expo start --tunnel` 很慢或连不上
+
+- 先重启命令：`npx expo start --tunnel`
+- 再试清缓存：`npx expo start --tunnel -c`
+- 切换网络（例如电脑改连手机热点）
+- 确保 Expo Go 已登录账号且网络可访问外网
+
+### 3) 手机能打开 Expo Go，但看不到项目
+
+- 确认电脑端确实使用了 `--tunnel`
+- 电脑端和手机端尽量登录同一个 Expo 账号
+- 重新启动 Expo Go 后刷新项目列表
+
+### 4) 为什么 Expo Go 下某些原生行为和预期不一致
+
+本项目用了 `patch-package` 修补 `react-native-webview` 的 Android 行为；这类原生补丁在 Expo Go（预编译客户端）里通常不会生效。  
+如果要严格验证这部分行为，请使用 Dev Client 或正式构建。
+
+---
+
+## 技术栈
+
+- Expo SDK 54
+- Expo Router
+- React Native 0.81
+- SQLite（`expo-sqlite`）
+- WebView（`react-native-webview`）
+- AsyncStorage
+
+---
+
+## 下一步开发建议
+
+1. M1 收尾：阅读交互细节（写想法、搜索接入）+ WebView 减少重载闪动。
+2. M2 启动：Supabase OTP 登录与 Profile 页真正落地。
+3. M3 设计：增量同步、冲突策略与恢复机制。
+
+以上详细执行视角请看 `claude.md`。

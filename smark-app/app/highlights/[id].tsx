@@ -1,6 +1,7 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import {
   DbHighlight,
   deleteHighlight,
@@ -18,6 +19,7 @@ export default function HighlightsScreen() {
   const [highlights, setHighlights] = useState<DbHighlight[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState<string>('');
+  const rowRefs = useRef<Map<string, Swipeable>>(new Map());
 
   async function refresh() {
     const a = await getArticle(articleId);
@@ -31,7 +33,7 @@ export default function HighlightsScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [articleId]);
 
-  async function onDelete(h: DbHighlight) {
+  function confirmDeleteHighlight(h: DbHighlight) {
     Alert.alert('删除划线', '确定删除这条划线吗？', [
       { text: '取消', style: 'cancel' },
       {
@@ -39,12 +41,31 @@ export default function HighlightsScreen() {
         style: 'destructive',
         onPress: () => {
           void (async () => {
+            rowRefs.current.get(h.id)?.close();
             await deleteHighlight(h.id);
+            rowRefs.current.delete(h.id);
             await refresh();
           })();
         },
       },
     ]);
+  }
+
+  function renderRightActions(h: DbHighlight) {
+    return (
+      <View style={styles.swipeActions}>
+        <Pressable
+          accessibilityLabel="删除划线"
+          style={styles.deleteAction}
+          onPress={() => {
+            rowRefs.current.get(h.id)?.close();
+            confirmDeleteHighlight(h);
+          }}
+        >
+          <Text style={styles.deleteActionText}>删除</Text>
+        </Pressable>
+      </View>
+    );
   }
 
   async function onSaveNote() {
@@ -64,57 +85,85 @@ export default function HighlightsScreen() {
     <View style={styles.container}>
       <Stack.Screen options={{ title: `划线 · ${title}` }} />
       <Text style={styles.hint}>
-        打开「加入复习」后，该句会进入「复习」Tab 的划线复习区；新建划线默认不加入。
+        阅读页：长按选词后拖手柄调范围，用浮层「复制/划线/搜索」；点已划线区域出「复制/删除划线」。打开「加入复习」进复习池。此处可左滑删除。
       </Text>
 
       <FlatList
         data={highlights}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={highlights.length ? undefined : styles.emptyContainer}
+        contentContainerStyle={highlights.length ? styles.listContent : styles.emptyContainer}
         renderItem={({ item }) => (
-          <View style={styles.card}>
-            <View style={styles.reviewRow}>
-              <Text style={styles.reviewLabel}>加入复习</Text>
-              <Switch
-                value={item.in_review === 1}
-                onValueChange={(v) => onToggleReview(item, v)}
-              />
-            </View>
-            <Text style={styles.quote}>{item.quote}</Text>
-            {item.note ? <Text style={styles.note}>备注：{item.note}</Text> : null}
+          <View style={styles.swipeRow}>
+            <Swipeable
+              ref={(ref) => {
+                if (ref) rowRefs.current.set(item.id, ref);
+              }}
+              renderRightActions={() => renderRightActions(item)}
+              overshootRight={false}
+            >
+              <View style={styles.card}>
+                <View style={styles.reviewRow}>
+                  <Text style={styles.reviewLabel}>加入复习</Text>
+                  <Switch
+                    value={item.in_review === 1}
+                    onValueChange={(v) => {
+                      void onToggleReview(item, v);
+                    }}
+                  />
+                </View>
 
-            {editingId === item.id ? (
-              <View style={styles.editRow}>
-                <TextInput
-                  value={noteDraft}
-                  onChangeText={setNoteDraft}
-                  placeholder="写点备注…"
-                  style={styles.noteInput}
-                />
-                <Pressable onPress={onSaveNote} style={styles.smallBtn}>
-                  <Text style={styles.smallBtnText}>保存</Text>
-                </Pressable>
+                <Text style={styles.quote}>{item.quote}</Text>
+                {item.note ? <Text style={styles.note}>想法：{item.note}</Text> : null}
+
+                {editingId === item.id ? (
+                  <View style={styles.editRow}>
+                    <TextInput
+                      value={noteDraft}
+                      onChangeText={setNoteDraft}
+                      placeholder="写下你的想法（可空）"
+                      style={styles.noteInput}
+                      multiline
+                    />
+                    <Pressable onPress={() => void onSaveNote()} style={styles.smallBtn}>
+                      <Text style={styles.smallBtnText}>保存</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setEditingId(null);
+                        setNoteDraft('');
+                      }}
+                      style={styles.smallBtn}
+                    >
+                      <Text style={styles.smallBtnText}>取消</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <View style={styles.actionsRow}>
+                    <Pressable
+                      onPress={() => {
+                        setEditingId(item.id);
+                        setNoteDraft(item.note ?? '');
+                      }}
+                      style={styles.smallBtn}
+                    >
+                      <Text style={styles.smallBtnText}>写想法</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        confirmDeleteHighlight(item);
+                      }}
+                      style={[styles.smallBtn, { borderColor: '#fecaca' }]}
+                    >
+                      <Text style={[styles.smallBtnText, { color: '#b91c1c' }]}>删除</Text>
+                    </Pressable>
+                  </View>
+                )}
               </View>
-            ) : (
-              <View style={styles.actionsRow}>
-                <Pressable
-                  onPress={() => {
-                    setEditingId(item.id);
-                    setNoteDraft(item.note ?? '');
-                  }}
-                  style={styles.smallBtn}
-                >
-                  <Text style={styles.smallBtnText}>备注</Text>
-                </Pressable>
-                <Pressable onPress={() => onDelete(item)} style={[styles.smallBtn, styles.dangerBtn]}>
-                  <Text style={[styles.smallBtnText, styles.dangerBtnText]}>删除</Text>
-                </Pressable>
-              </View>
-            )}
+            </Swipeable>
           </View>
         )}
         ListEmptyComponent={
-          <Text style={styles.emptyText}>还没有划线。在阅读页选中文字后点「划线」。</Text>
+          <Text style={styles.emptyText}>还没有划线。在阅读页选中文本后点浮层「划线」。</Text>
         }
       />
     </View>
@@ -124,6 +173,19 @@ export default function HighlightsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff', padding: 16 },
   hint: { color: '#6b7280', fontSize: 13, lineHeight: 19, marginBottom: 12 },
+  listContent: { paddingBottom: 24 },
+  swipeRow: { marginBottom: 12 },
+  swipeActions: { flexDirection: 'row', alignItems: 'stretch', justifyContent: 'flex-end' },
+  deleteAction: {
+    backgroundColor: '#dc2626',
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 88,
+    borderTopRightRadius: 12,
+    borderBottomRightRadius: 12,
+    marginLeft: 8,
+  },
+  deleteActionText: { color: '#fff', fontWeight: '800', fontSize: 15 },
   reviewRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -139,7 +201,7 @@ const styles = StyleSheet.create({
     borderColor: '#e5e7eb',
     borderRadius: 12,
     padding: 14,
-    marginBottom: 12,
+    backgroundColor: '#fff',
   },
   quote: { fontSize: 15, fontWeight: '700', color: '#111827' },
   note: { marginTop: 8, color: '#6b7280' },
@@ -161,9 +223,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   smallBtnText: { color: '#111827', fontWeight: '700' },
-  dangerBtn: { borderColor: '#fecaca' },
-  dangerBtnText: { color: '#b91c1c' },
   emptyContainer: { flexGrow: 1, justifyContent: 'center' },
   emptyText: { color: '#6b7280', textAlign: 'center' },
 });
-

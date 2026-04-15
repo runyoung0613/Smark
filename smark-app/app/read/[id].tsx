@@ -1,17 +1,29 @@
+import * as Clipboard from 'expo-clipboard';
+import * as Linking from 'expo-linking';
 import { Stack, router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   ToastAndroid,
   View,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { createHighlight, DbHighlight, getArticle, listHighlights } from '../../services/db';
+import {
+  createHighlight,
+  deleteHighlight,
+  DbHighlight,
+  getArticle,
+  listHighlights,
+  updateHighlightNote,
+} from '../../services/db';
 import {
   FontSizePreset,
   loadReaderPrefs,
@@ -22,6 +34,12 @@ import {
 } from '../../services/readerPrefs';
 
 const FONT_PX: Record<FontSizePreset, number> = { sm: 15, md: 17, lg: 19 };
+
+/** 顶栏为叠在 WebView 上时，正文需预留的顶部内边距（与注入 JS 一致） */
+const READER_BODY_PAD_TOP_EXPANDED = 52;
+const READER_BODY_PAD_TOP_COLLAPSED = 12;
+const SELECTION_DEBOUNCE_MS = 480;
+const RN_TOOLBAR_H = 48;
 
 const THEME_VARS: Record<
   ReaderTheme,
@@ -56,26 +74,28 @@ const THEME_VARS: Record<
   },
 };
 
-type SelectionMessage = {
-  type: 'selection';
+type SelectionEmptyMessage = { type: 'selectionEmpty' };
+type SelectionActiveMessage = {
+  type: 'selectionActive';
   quote: string;
   start: number;
   end: number;
-};
-
-type SelectionEmptyMessage = { type: 'selectionEmpty' };
-type SelectionRectMessage = {
-  type: 'selectionRect';
   rect: { top: number; left: number; width: number; height: number };
 };
 type ScrollMessage = { type: 'scroll'; y: number; h?: number; vh?: number };
 type TapMessage = { type: 'tap' };
+type HighlightMenuMessage = {
+  type: 'highlightMenu';
+  id: string;
+  quote: string;
+  rect: { top: number; left: number; width: number; height: number };
+};
 type WebToNativeMessage =
-  | SelectionMessage
+  | SelectionActiveMessage
   | SelectionEmptyMessage
-  | SelectionRectMessage
   | ScrollMessage
-  | TapMessage;
+  | TapMessage
+  | HighlightMenuMessage;
 
 function escapeHtml(text: string) {
   return text
@@ -128,12 +148,18 @@ function buildHtml(
     html, body { margin: 0; background: var(--bg); }
     body {
       font-family: -apple-system, Roboto, "Segoe UI", Arial, sans-serif;
-      padding: 18px 16px;
+      padding: ${READER_BODY_PAD_TOP_EXPANDED}px 16px 18px 16px;
       font-size: var(--fs);
       line-height: 1.85;
       color: var(--fg);
     }
-    .hl { background: var(--hl); border-radius: 4px; padding: 0 2px; }
+    .hl {
+      background: var(--hl);
+      border-radius: 4px;
+      padding: 0 2px;
+      -webkit-user-select: none;
+      user-select: none;
+    }
     #content {
       white-space: pre-wrap;
       word-break: break-word;
@@ -263,24 +289,24 @@ function buildHtml(
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'selectionEmpty' }));
           return;
         }
-        try {
-          var r = range.getBoundingClientRect();
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'selectionRect',
-            rect: { top: (r.top + (window.scrollY || 0)), left: r.left, width: r.width, height: r.height }
-          }));
-        } catch (e) {}
         var offsets = getOffsets(range);
         if (offsets.start < 0 || offsets.end <= offsets.start) {
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'selectionEmpty' }));
           return;
         }
-        window.ReactNativeWebView.postMessage(JSON.stringify({
-          type: 'selection',
-          quote: quote,
-          start: offsets.start,
-          end: offsets.end
-        }));
+        try {
+          var r = range.getBoundingClientRect();
+          var rect = { top: r.top, left: r.left, width: r.width, height: r.height };
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'selectionActive',
+            quote: quote,
+            start: offsets.start,
+            end: offsets.end,
+            rect: rect
+          }));
+        } catch (e) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'selectionEmpty' }));
+        }
       }
 
       var scrollTimer = null;
@@ -300,20 +326,70 @@ function buildHtml(
         }, 220);
       }, { passive: true });
 
+      var suppressNextTap = false;
+      (function setupHighlightTapMenu() {
+        var root = document.getElementById('content');
+        if (!root) return;
+        var downAt = 0;
+        var sx = 0;
+        var sy = 0;
+        root.addEventListener('touchstart', function(e) {
+          if (e.touches.length !== 1) return;
+          downAt = Date.now();
+          sx = e.touches[0].clientX;
+          sy = e.touches[0].clientY;
+        }, { passive: true });
+        root.addEventListener('touchend', function(e) {
+          var dt = Date.now() - downAt;
+          if (dt < 40 || dt > 900) return;
+          var t = e.changedTouches[0];
+          if (Math.abs(t.clientX - sx) > 16 || Math.abs(t.clientY - sy) > 16) return;
+          var el = document.elementFromPoint(t.clientX, t.clientY);
+          if (!el) return;
+          var hl = el.closest && el.closest('.hl');
+          if (!hl) return;
+          var hid = hl.getAttribute('data-hl-id');
+          if (!hid || !window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) return;
+          try {
+            var s = window.getSelection();
+            if (s && s.rangeCount > 0 && !s.getRangeAt(0).collapsed && s.toString().trim().length > 0) {
+              return;
+            }
+          } catch (e4) {}
+          var qt = (hl.textContent || '').trim();
+          try {
+            var rb = hl.getBoundingClientRect();
+            var rect = { top: rb.top, left: rb.left, width: rb.width, height: rb.height };
+            suppressNextTap = true;
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'highlightMenu', id: hid, quote: qt, rect: rect }));
+            setTimeout(function() { suppressNextTap = false; }, 450);
+          } catch (e5) {}
+        }, { passive: true });
+      })();
+
+      function clearSelection() {
+        try {
+          var s = window.getSelection();
+          if (s) s.removeAllRanges();
+        } catch (e) {}
+      }
+
       var selTimer = null;
       document.addEventListener('selectionchange', function() {
         if (selTimer) clearTimeout(selTimer);
         selTimer = setTimeout(function() {
           selTimer = null;
           postSelection();
-        }, 120);
+        }, ${SELECTION_DEBOUNCE_MS});
       });
 
       document.addEventListener('click', function() {
+        if (suppressNextTap) return;
         if (!window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) return;
         window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'tap' }));
       }, { passive: true });
 
+      window.__smarkClearSelection = clearSelection;
       window.__smarkPostSelection = postSelection;
       window.__smarkApplyHighlightByOffsets = applyHighlightByOffsets;
       window.__smarkRemoveHighlightById = removeHighlightById;
@@ -324,8 +400,8 @@ function buildHtml(
 </html>`;
 }
 
-const INJECT_SAVE_SELECTION =
-  '(function(){try{if(window.__smarkPostSelection)window.__smarkPostSelection();}catch(e){}})();true;';
+const INJECT_CLEAR_SELECTION =
+  '(function(){try{if(window.__smarkClearSelection)window.__smarkClearSelection();}catch(e){}})();true;';
 
 function injectApplyHighlightByOffsets(id: string, start: number, end: number) {
   return `(function(){try{if(window.__smarkApplyHighlightByOffsets)window.__smarkApplyHighlightByOffsets(${JSON.stringify(
@@ -343,6 +419,24 @@ function injectSetReaderStyle(input: { bg: string; fg: string; hl: string; fs: s
   return `(function(){try{if(window.__smarkSetReaderStyle)window.__smarkSetReaderStyle(${JSON.stringify(
     input
   )});}catch(e){}})();true;`;
+}
+
+function injectBodyPaddingTop(px: number) {
+  return `(function(){try{document.body.style.paddingTop=${px}+'px';}catch(e){}})();true;`;
+}
+
+/** 选区/划线块为视口坐标；工具条叠在 WebView 容器内，需避开上下边界 */
+function clampToolbarTop(viewportTop: number, viewportH: number, stageHeight: number) {
+  const barH = RN_TOOLBAR_H;
+  const m = 8;
+  if (stageHeight < barH + m * 2) return m;
+  const bottom = viewportTop + viewportH;
+  let top = viewportTop - barH - m;
+  if (top < m) {
+    top = bottom + m;
+  }
+  const maxTop = stageHeight - barH - m;
+  return Math.max(m, Math.min(top, maxTop));
 }
 
 const THEME_LABEL: Record<ReaderTheme, string> = {
@@ -379,14 +473,36 @@ export default function ReadScreen() {
   const pendingRestoreYRef = useRef<number | undefined>(undefined);
   const knownHighlightIdsRef = useRef<Set<string>>(new Set());
   const lastScrollForUiRef = useRef(0);
-  const pendingHighlightRequestRef = useRef(false);
 
   const [topBarVisible, setTopBarVisible] = useState(true);
-  const [selectionRect, setSelectionRect] = useState<
-    | { top: number; left: number; width: number; height: number }
-    | null
-  >(null);
+  const [stageLayout, setStageLayout] = useState({ width: 0, height: 0 });
+  type SelPayload = { quote: string; start: number; end: number };
+  const [selectionPayload, setSelectionPayload] = useState<SelPayload | null>(null);
+  const [selectionRect, setSelectionRect] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [highlightMenu, setHighlightMenu] = useState<{
+    id: string;
+    quote: string;
+    rect: { top: number; left: number; width: number; height: number };
+  } | null>(null);
   const [progress, setProgress] = useState(0);
+
+  const [noteModalVisible, setNoteModalVisible] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteTarget, setNoteTarget] = useState<{ highlightId: string; quote: string } | null>(null);
+
+  const clearSelectionChrome = useCallback(() => {
+    setSelectionPayload(null);
+    setSelectionRect(null);
+  }, []);
+
+  const clearHighlightMenu = useCallback(() => {
+    setHighlightMenu(null);
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -396,6 +512,12 @@ export default function ReadScreen() {
       setPrefsLoaded(true);
     })();
   }, []);
+
+  useEffect(() => {
+    if (loading) return;
+    const px = topBarVisible ? READER_BODY_PAD_TOP_EXPANDED : READER_BODY_PAD_TOP_COLLAPSED;
+    webRef.current?.injectJavaScript(injectBodyPaddingTop(px));
+  }, [topBarVisible, loading]);
 
   async function persistPrefs(next: { readerTheme?: ReaderTheme; fontSizePreset?: FontSizePreset }) {
     const theme = next.readerTheme ?? readerTheme;
@@ -513,11 +635,20 @@ export default function ReadScreen() {
       webRef.current?.injectJavaScript(
         injectSetReaderStyle({ bg: t.bg, fg: t.fg, hl: t.hl, fs: `${fs}px` })
       );
+      const pad = topBarVisible ? READER_BODY_PAD_TOP_EXPANDED : READER_BODY_PAD_TOP_COLLAPSED;
+      webRef.current?.injectJavaScript(injectBodyPaddingTop(pad));
       if (jumpHighlightId) {
         setTimeout(() => scrollToHighlightInWeb(jumpHighlightId), 100);
       }
     })();
-  }, [restoreScroll, jumpHighlightId, scrollToHighlightInWeb, readerTheme, fontSizePreset]);
+  }, [
+    restoreScroll,
+    jumpHighlightId,
+    scrollToHighlightInWeb,
+    readerTheme,
+    fontSizePreset,
+    topBarVisible,
+  ]);
 
   // When returning from highlights/edit pages, read/[id] stays mounted,
   // so we must refresh highlights on focus to reflect deletes immediately.
@@ -532,16 +663,158 @@ export default function ReadScreen() {
     }, [articleId])
   );
 
+  const applyHighlightFromSelection = useCallback(async () => {
+    const sp = selectionPayload;
+    if (!sp) {
+      if (Platform.OS === 'android') {
+        ToastAndroid.show('请先长按并拖选文字', ToastAndroid.SHORT);
+      }
+      return;
+    }
+    const quote = sp.quote.trim();
+    if (!quote || sp.start < 0 || sp.end <= sp.start || sp.end > content.length) return;
+
+    const existing = await listHighlights(articleId);
+    if (existing.some((h) => h.deleted_at == null && h.start === sp.start && h.end === sp.end)) {
+      if (Platform.OS === 'android') {
+        ToastAndroid.show('该句已划过线', ToastAndroid.SHORT);
+      }
+      return;
+    }
+
+    pendingRestoreYRef.current = lastScrollYRef.current;
+    const newId = await createHighlight({ articleId, start: sp.start, end: sp.end, quote });
+    webRef.current?.injectJavaScript(injectApplyHighlightByOffsets(newId, sp.start, sp.end));
+    webRef.current?.injectJavaScript(INJECT_CLEAR_SELECTION);
+    clearSelectionChrome();
+    clearHighlightMenu();
+    const hs = await listHighlights(articleId);
+    setHighlights(hs);
+    knownHighlightIdsRef.current = new Set(hs.map((h) => h.id));
+
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {
+      /* optional */
+    }
+    if (Platform.OS === 'android') {
+      ToastAndroid.show('已保存划线', ToastAndroid.SHORT);
+    }
+  }, [
+    articleId,
+    clearHighlightMenu,
+    clearSelectionChrome,
+    content.length,
+    selectionPayload,
+  ]);
+
+  const openNoteEditorForHighlight = useCallback(
+    (highlightId: string, quote: string) => {
+      const existingNote = highlights.find((h) => h.id === highlightId)?.note ?? '';
+      setNoteTarget({ highlightId, quote });
+      setNoteDraft(existingNote);
+      setNoteModalVisible(true);
+    },
+    [highlights]
+  );
+
+  const createHighlightAndOpenNoteFromSelection = useCallback(async () => {
+    const sp = selectionPayload;
+    if (!sp) {
+      if (Platform.OS === 'android') {
+        ToastAndroid.show('请先长按并拖选文字', ToastAndroid.SHORT);
+      }
+      return;
+    }
+    const quote = sp.quote.trim();
+    if (!quote || sp.start < 0 || sp.end <= sp.start || sp.end > content.length) return;
+
+    const existing = await listHighlights(articleId);
+    if (existing.some((h) => h.deleted_at == null && h.start === sp.start && h.end === sp.end)) {
+      if (Platform.OS === 'android') {
+        ToastAndroid.show('该句已划过线', ToastAndroid.SHORT);
+      }
+      return;
+    }
+
+    pendingRestoreYRef.current = lastScrollYRef.current;
+    const newId = await createHighlight({ articleId, start: sp.start, end: sp.end, quote });
+    webRef.current?.injectJavaScript(injectApplyHighlightByOffsets(newId, sp.start, sp.end));
+    webRef.current?.injectJavaScript(INJECT_CLEAR_SELECTION);
+    clearSelectionChrome();
+    clearHighlightMenu();
+    const hs = await listHighlights(articleId);
+    setHighlights(hs);
+    knownHighlightIdsRef.current = new Set(hs.map((h) => h.id));
+
+    openNoteEditorForHighlight(newId, quote);
+
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {
+      /* optional */
+    }
+    if (Platform.OS === 'android') {
+      ToastAndroid.show('已保存划线', ToastAndroid.SHORT);
+    }
+  }, [
+    articleId,
+    clearHighlightMenu,
+    clearSelectionChrome,
+    content.length,
+    openNoteEditorForHighlight,
+    selectionPayload,
+  ]);
+
+  const saveNote = useCallback(async () => {
+    if (!noteTarget) return;
+    await updateHighlightNote({ id: noteTarget.highlightId, note: noteDraft.trim() });
+    setNoteModalVisible(false);
+    setNoteTarget(null);
+    setNoteDraft('');
+    await refreshHighlightsOnly();
+    if (Platform.OS === 'android') {
+      ToastAndroid.show('已保存想法', ToastAndroid.SHORT);
+    }
+  }, [noteDraft, noteTarget, refreshHighlightsOnly]);
+
   async function onMessage(event: { nativeEvent: { data: string } }) {
     try {
       const raw = event.nativeEvent?.data;
       if (typeof raw !== 'string') return;
       const msg = JSON.parse(raw) as WebToNativeMessage;
 
+      if (msg.type === 'selectionActive') {
+        setHighlightMenu(null);
+        setSelectionPayload({
+          quote: msg.quote,
+          start: msg.start,
+          end: msg.end,
+        });
+        setSelectionRect(msg.rect);
+        return;
+      }
+
+      if (msg.type === 'highlightMenu') {
+        clearSelectionChrome();
+        try {
+          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        } catch {
+          /* optional */
+        }
+        setHighlightMenu({
+          id: msg.id,
+          quote: (msg.quote || '').trim(),
+          rect: msg.rect,
+        });
+        return;
+      }
+
       if (msg.type === 'scroll') {
         lastScrollYRef.current = msg.y;
         await saveScrollPosition(articleId, msg.y);
-        setSelectionRect(null);
+        clearSelectionChrome();
+        clearHighlightMenu();
         const h = typeof msg.h === 'number' ? msg.h : 0;
         const vh = typeof msg.vh === 'number' ? msg.vh : 0;
         const denom = Math.max(1, h - vh);
@@ -556,59 +829,15 @@ export default function ReadScreen() {
       }
 
       if (msg.type === 'tap') {
+        clearSelectionChrome();
+        clearHighlightMenu();
         setTopBarVisible((v) => !v);
-        setSelectionRect(null);
-        return;
-      }
-
-      if (msg.type === 'selectionRect') {
-        setSelectionRect(msg.rect);
         return;
       }
 
       if (msg.type === 'selectionEmpty') {
-        // Only show hint when user explicitly tries to highlight.
-        if (pendingHighlightRequestRef.current) {
-          pendingHighlightRequestRef.current = false;
-          if (Platform.OS === 'android') {
-            ToastAndroid.show('请先选中文字，再点「划线」', ToastAndroid.SHORT);
-          }
-        }
-        setSelectionRect(null);
+        clearSelectionChrome();
         return;
-      }
-
-      if (msg.type !== 'selection') return;
-      pendingHighlightRequestRef.current = false;
-
-      const quote = msg.quote.trim();
-      if (!quote) return;
-      if (msg.start < 0 || msg.end <= msg.start) return;
-      if (msg.end > content.length) return;
-
-      const existing = await listHighlights(articleId);
-      if (existing.some((h) => h.deleted_at == null && h.start === msg.start && h.end === msg.end)) {
-        if (Platform.OS === 'android') {
-          ToastAndroid.show('该句已划过线', ToastAndroid.SHORT);
-        }
-        return;
-      }
-
-      pendingRestoreYRef.current = lastScrollYRef.current;
-      const newId = await createHighlight({ articleId, start: msg.start, end: msg.end, quote });
-      // DOM patch first to avoid WebView reload flash.
-      webRef.current?.injectJavaScript(injectApplyHighlightByOffsets(newId, msg.start, msg.end));
-      const hs = await listHighlights(articleId);
-      setHighlights(hs);
-      knownHighlightIdsRef.current = new Set(hs.map((h) => h.id));
-
-      try {
-        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      } catch {
-        /* optional on unsupported */
-      }
-      if (Platform.OS === 'android') {
-        ToastAndroid.show('已保存划线', ToastAndroid.SHORT);
       }
     } catch {
       // ignore malformed messages
@@ -619,116 +848,311 @@ export default function ReadScreen() {
     <View style={[styles.container, { backgroundColor: themeUi.barBg }]}>
       <Stack.Screen options={{ title }} />
 
-      <View style={[styles.progressTrack, { backgroundColor: themeUi.barBorder }]}>
-        <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%`, backgroundColor: '#2563eb' }]} />
-      </View>
+      <View style={styles.stage} onLayout={(e) => setStageLayout(e.nativeEvent.layout)}>
+        <WebView
+          ref={webRef}
+          originWhitelist={['*']}
+          source={{ html, baseUrl: 'https://smark.local/' }}
+          onMessage={onMessage}
+          onLoadEnd={onWebViewLoadEnd}
+          javaScriptEnabled
+          domStorageEnabled
+          nestedScrollEnabled
+          setSupportMultipleWindows={false}
+          menuItems={[]}
+          style={styles.webFill}
+        />
 
-      <View
-        style={[
-          styles.topBar,
-          { backgroundColor: themeUi.barBg, borderBottomColor: themeUi.barBorder },
-          !topBarVisible && styles.topBarHidden,
-        ]}
-      >
-        <View style={styles.topBarRow}>
-          <Pressable
-            onPress={() => cycleTheme()}
-            style={[styles.secondaryBtn, { borderColor: themeUi.barBorder }]}
-            disabled={loading || !prefsLoaded}
-          >
-            <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>
-              {THEME_LABEL[readerTheme]}
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => cycleFont()}
-            style={[styles.secondaryBtn, styles.topBarBtnSpacing, { borderColor: themeUi.barBorder }]}
-            disabled={loading || !prefsLoaded}
-          >
-            <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>
-              {FONT_LABEL[fontSizePreset]}
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => {
-              pendingHighlightRequestRef.current = true;
-              webRef.current?.injectJavaScript(INJECT_SAVE_SELECTION);
-            }}
-            style={[styles.secondaryBtn, styles.topBarBtnSpacing, { borderColor: themeUi.barBorder }]}
-            disabled={loading}
-          >
-            <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>划线</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => {
-              router.push({ pathname: '/highlights/[id]', params: { id: articleId } });
-            }}
-            style={[styles.secondaryBtn, styles.topBarBtnSpacing, { borderColor: themeUi.barBorder }]}
-            disabled={loading}
-          >
-            <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>列表</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => {
-              router.push({ pathname: '/edit/[id]', params: { id: articleId } });
-            }}
-            style={[styles.secondaryBtn, styles.topBarBtnSpacing, { borderColor: themeUi.barBorder }]}
-            disabled={loading}
-          >
-            <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>矫正</Text>
-          </Pressable>
-        </View>
-      </View>
-
-      {selectionRect ? (
-        <View style={styles.selectionBar} pointerEvents="box-none">
+        <View
+          pointerEvents="none"
+          style={[styles.progressOverlay, { backgroundColor: themeUi.barBorder }]}
+        >
           <View
             style={[
-              styles.selectionBarInner,
-              { top: Math.max(8, selectionRect.top - 44), left: 12 },
+              styles.progressFill,
+              { width: `${Math.round(progress * 100)}%`, backgroundColor: '#2563eb' },
             ]}
-          >
+          />
+        </View>
+
+        <View
+          pointerEvents={topBarVisible ? 'box-none' : 'none'}
+          style={[
+            styles.topBarOverlay,
+            { backgroundColor: themeUi.barBg, borderBottomColor: themeUi.barBorder },
+            !topBarVisible && styles.topBarOverlayHidden,
+          ]}
+        >
+          <View style={styles.topBarRow}>
+            <Pressable
+              onPress={() => cycleTheme()}
+              style={[styles.secondaryBtn, { borderColor: themeUi.barBorder }]}
+              disabled={loading || !prefsLoaded}
+            >
+              <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>
+                {THEME_LABEL[readerTheme]}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => cycleFont()}
+              style={[styles.secondaryBtn, styles.topBarBtnSpacing, { borderColor: themeUi.barBorder }]}
+              disabled={loading || !prefsLoaded}
+            >
+              <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>
+                {FONT_LABEL[fontSizePreset]}
+              </Text>
+            </Pressable>
             <Pressable
               onPress={() => {
-                pendingHighlightRequestRef.current = true;
-                webRef.current?.injectJavaScript(INJECT_SAVE_SELECTION);
-                setSelectionRect(null);
+                router.push({ pathname: '/highlights/[id]', params: { id: articleId } });
               }}
-              style={styles.selectionBtn}
+              style={[styles.secondaryBtn, styles.topBarBtnSpacing, { borderColor: themeUi.barBorder }]}
+              disabled={loading}
             >
-              <Text style={styles.selectionBtnText}>划线</Text>
+              <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>列表</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                router.push({ pathname: '/edit/[id]', params: { id: articleId } });
+              }}
+              style={[styles.secondaryBtn, styles.topBarBtnSpacing, { borderColor: themeUi.barBorder }]}
+              disabled={loading}
+            >
+              <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>矫正</Text>
             </Pressable>
           </View>
         </View>
-      ) : null}
 
-      <WebView
-        ref={webRef}
-        originWhitelist={['*']}
-        source={{ html, baseUrl: 'https://smark.local/' }}
-        onMessage={onMessage}
-        onLoadEnd={onWebViewLoadEnd}
-        javaScriptEnabled
-        domStorageEnabled
-        nestedScrollEnabled
-        setSupportMultipleWindows={false}
-        style={styles.webview}
-      />
+        {selectionRect && selectionPayload ? (
+          <View style={styles.selectionBar} pointerEvents="box-none">
+            <View
+              style={[
+                styles.selectionBarInner,
+                {
+                  top: clampToolbarTop(
+                    selectionRect.top,
+                    selectionRect.height,
+                    stageLayout.height
+                  ),
+                  left: 8,
+                  alignSelf: 'flex-start',
+                  maxWidth: '92%',
+                },
+              ]}
+            >
+              <View style={styles.selectionBtnRow}>
+                <Pressable
+                  onPress={() => {
+                    void (async () => {
+                      try {
+                        await Clipboard.setStringAsync(selectionPayload.quote);
+                        if (Platform.OS === 'android') {
+                          ToastAndroid.show('已复制', ToastAndroid.SHORT);
+                        }
+                      } catch {
+                        /* optional */
+                      }
+                    })();
+                  }}
+                  style={styles.selectionBtn}
+                >
+                  <Text style={styles.toolBtnText}>复制</Text>
+                </Pressable>
+                <Pressable onPress={() => void applyHighlightFromSelection()} style={styles.selectionBtn}>
+                  <Text style={styles.toolBtnText}>划线</Text>
+                </Pressable>
+                <Pressable onPress={() => void createHighlightAndOpenNoteFromSelection()} style={styles.selectionBtn}>
+                  <Text style={styles.toolBtnText}>写想法</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    const q = selectionPayload.quote.trim();
+                    if (!q) return;
+                    void Linking.openURL(`https://www.baidu.com/s?wd=${encodeURIComponent(q)}`);
+                  }}
+                  style={styles.selectionBtn}
+                >
+                  <Text style={styles.toolBtnText}>搜索</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    webRef.current?.injectJavaScript(INJECT_CLEAR_SELECTION);
+                    clearSelectionChrome();
+                  }}
+                  style={[styles.selectionBtn, styles.selectionBtnMuted]}
+                >
+                  <Text style={styles.selectionBtnTextMuted}>取消</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        ) : null}
+
+        {highlightMenu ? (
+          <View style={styles.selectionBar} pointerEvents="box-none">
+            <View
+              style={[
+                styles.selectionBarInner,
+                {
+                  top: clampToolbarTop(
+                    highlightMenu.rect.top,
+                    highlightMenu.rect.height,
+                    stageLayout.height
+                  ),
+                  left: 8,
+                  alignSelf: 'flex-start',
+                  maxWidth: '92%',
+                },
+              ]}
+            >
+              <View style={styles.selectionBtnRow}>
+                <Pressable
+                  onPress={() => {
+                    void (async () => {
+                      try {
+                        await Clipboard.setStringAsync(highlightMenu.quote);
+                        if (Platform.OS === 'android') {
+                          ToastAndroid.show('已复制', ToastAndroid.SHORT);
+                        }
+                      } catch {
+                        /* optional */
+                      }
+                    })();
+                  }}
+                  style={styles.selectionBtn}
+                >
+                  <Text style={styles.toolBtnText}>复制</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    const hid = highlightMenu.id;
+                    Alert.alert('删除划线', '确定移除这条荧光笔标记吗？', [
+                      { text: '保留', style: 'cancel' },
+                      {
+                        text: '移除',
+                        style: 'destructive',
+                        onPress: () => {
+                          void (async () => {
+                            await deleteHighlight(hid);
+                            webRef.current?.injectJavaScript(injectRemoveHighlightById(hid));
+                            clearHighlightMenu();
+                            const hs = await listHighlights(articleId);
+                            setHighlights(hs);
+                            knownHighlightIdsRef.current = new Set(hs.map((h) => h.id));
+                            if (Platform.OS === 'android') {
+                              ToastAndroid.show('已移除划线', ToastAndroid.SHORT);
+                            }
+                          })();
+                        },
+                      },
+                    ]);
+                  }}
+                  style={styles.selectionBtn}
+                >
+                  <Text style={styles.toolBtnTextDanger}>删除</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    openNoteEditorForHighlight(highlightMenu.id, highlightMenu.quote);
+                  }}
+                  style={styles.selectionBtn}
+                >
+                  <Text style={styles.toolBtnText}>写想法</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    const q = highlightMenu.quote.trim();
+                    if (!q) return;
+                    void Linking.openURL(`https://www.baidu.com/s?wd=${encodeURIComponent(q)}`);
+                  }}
+                  style={styles.selectionBtn}
+                >
+                  <Text style={styles.toolBtnText}>搜索</Text>
+                </Pressable>
+                <Pressable onPress={() => clearHighlightMenu()} style={[styles.selectionBtn, styles.selectionBtnMuted]}>
+                  <Text style={styles.selectionBtnTextMuted}>关闭</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        ) : null}
+
+        <Modal
+          visible={noteModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            setNoteModalVisible(false);
+            setNoteTarget(null);
+            setNoteDraft('');
+          }}
+        >
+          <View style={styles.modalMask}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalWrap}>
+              <View style={styles.modalCard}>
+                <Text style={styles.modalTitle}>写想法</Text>
+                {noteTarget?.quote ? (
+                  <Text numberOfLines={3} style={styles.modalQuote}>
+                    {noteTarget.quote}
+                  </Text>
+                ) : null}
+                <TextInput
+                  value={noteDraft}
+                  onChangeText={setNoteDraft}
+                  placeholder="写下你的想法（可留空）"
+                  style={styles.modalInput}
+                  multiline
+                />
+                <View style={styles.modalActions}>
+                  <Pressable
+                    onPress={() => {
+                      setNoteModalVisible(false);
+                      setNoteTarget(null);
+                      setNoteDraft('');
+                    }}
+                    style={styles.modalBtn}
+                  >
+                    <Text style={styles.modalBtnText}>取消</Text>
+                  </Pressable>
+                  <Pressable onPress={() => void saveNote()} style={[styles.modalBtn, styles.modalBtnPrimary]}>
+                    <Text style={styles.modalBtnPrimaryText}>保存</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </KeyboardAvoidingView>
+          </View>
+        </Modal>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  progressTrack: { height: 2, width: '100%' },
+  stage: { flex: 1, position: 'relative' },
+  webFill: { ...StyleSheet.absoluteFillObject },
+  progressOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+    zIndex: 30,
+  },
   progressFill: { height: 2 },
-  topBar: {
+  topBarOverlay: {
+    position: 'absolute',
+    top: 2,
+    left: 0,
+    right: 0,
+    zIndex: 29,
     paddingHorizontal: 8,
     paddingTop: 8,
     paddingBottom: 8,
     borderBottomWidth: 1,
   },
-  topBarHidden: {
+  topBarOverlayHidden: {
+    opacity: 0,
     height: 0,
     paddingTop: 0,
     paddingBottom: 0,
@@ -749,27 +1173,92 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   secondaryBtnText: { fontWeight: '700', fontSize: 13 },
-  webview: { flex: 1 },
   selectionBar: {
     position: 'absolute',
     left: 0,
     right: 0,
     top: 0,
     bottom: 0,
+    zIndex: 40,
   },
   selectionBarInner: {
     position: 'absolute',
     backgroundColor: 'rgba(17, 24, 39, 0.96)',
     borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  selectionBtnRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
   },
   selectionBtn: {
-    paddingHorizontal: 6,
-    paddingVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  toolBtnText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  toolBtnTextDanger: {
+    color: '#fecaca',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  selectionBtnMuted: {
+    backgroundColor: 'transparent',
   },
   selectionBtnText: {
     color: '#fff',
     fontWeight: '800',
+    fontSize: 13,
   },
+  selectionBtnTextMuted: {
+    color: 'rgba(255,255,255,0.85)',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  modalMask: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    padding: 16,
+    justifyContent: 'center',
+  },
+  modalWrap: { width: '100%' },
+  modalCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  modalTitle: { fontSize: 16, fontWeight: '900', color: '#111827' },
+  modalQuote: { marginTop: 8, fontSize: 13, lineHeight: 18, color: '#6b7280' },
+  modalInput: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 96,
+    color: '#111827',
+  },
+  modalActions: { marginTop: 12, flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
+  modalBtn: {
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: '#fff',
+  },
+  modalBtnText: { fontWeight: '800', color: '#111827' },
+  modalBtnPrimary: { backgroundColor: '#111827', borderColor: '#111827' },
+  modalBtnPrimaryText: { color: '#fff', fontWeight: '900' },
 });

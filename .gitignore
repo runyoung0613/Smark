@@ -1,0 +1,52 @@
+### Repo-wide ignores (Smark)
+
+# 1) 操作系统垃圾文件（不需要上传）
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 2) 编辑器 / IDE 本地配置（不需要上传）
+.vscode/
+.idea/
+*.iml
+
+# 3) Cursor / Agent 本地产物（不需要上传）
+.workbuddy/
+
+# 4) 日志与临时输出（不需要上传）
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 5) 依赖与缓存（不需要上传，可再生）
+**/node_modules/
+**/.expo/
+**/.metro-health-check*
+**/*.tsbuildinfo
+
+# 6) 构建产物（不需要上传，可再构建）
+**/dist/
+**/web-build/
+
+# 7) 环境变量与敏感信息（不需要上传）
+**/.env
+**/.env.*
+!**/.env.example
+
+# 8) 原生工程与签名文件（默认不上传；仅在明确纳入版本管理时再调整）
+**/android/
+**/ios/
+**/.kotlin/
+**/*.jks
+**/*.keystore
+**/*.p8
+**/*.p12
+**/*.key
+**/*.mobileprovision
+**/*.orig.*
+
+# 9) patch-package 补丁（建议上传：属于业务修复代码）
+!**/patches/
+

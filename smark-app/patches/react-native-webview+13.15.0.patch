@@ -1,0 +1,60 @@
+diff --git a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java
+index 5932fc1..acacb3d 100644
+--- a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java
++++ b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebView.java
+@@ -163,6 +163,55 @@ public class RNCWebView extends WebView implements LifecycleEventListener {
+         return super.startActionMode(callback, type);
+       }
+ 
++      if (menuCustomItems.isEmpty()) {
++        return super.startActionMode(new ActionMode.Callback2() {
++          @Override
++          public boolean onCreateActionMode(ActionMode mode, Menu menu) {
++            final boolean created;
++            if (callback instanceof ActionMode.Callback2) {
++              created = ((ActionMode.Callback2) callback).onCreateActionMode(mode, menu);
++            } else {
++              created = callback.onCreateActionMode(mode, menu);
++            }
++            if (created) {
++              menu.clear();
++            }
++            return created;
++          }
++
++          @Override
++          public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
++            boolean r;
++            if (callback instanceof ActionMode.Callback2) {
++              r = ((ActionMode.Callback2) callback).onPrepareActionMode(mode, menu);
++            } else {
++              r = callback.onPrepareActionMode(mode, menu);
++            }
++            menu.clear();
++            return r;
++          }
++
++          @Override
++          public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
++            return callback.onActionItemClicked(mode, item);
++          }
++
++          @Override
++          public void onDestroyActionMode(ActionMode mode) {
++            callback.onDestroyActionMode(mode);
++          }
++
++          @Override
++          public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
++            if (callback instanceof ActionMode.Callback2) {
++              ((ActionMode.Callback2) callback).onGetContentRect(mode, view, outRect);
++            } else {
++              super.onGetContentRect(mode, view, outRect);
++            }
++          }
++        }, type);
++      }
++
+       return super.startActionMode(new ActionMode.Callback2() {
+         @Override
+         public boolean onCreateActionMode(ActionMode mode, Menu menu) {
