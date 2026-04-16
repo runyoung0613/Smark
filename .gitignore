@@ -50,3 +50,6 @@ pnpm-debug.log*
 # 9) patch-package 补丁（建议上传：属于业务修复代码）
 !**/patches/
 
+# 10) Supabase CLI 本地临时文件（不上传）
+supabase/.temp/
+
