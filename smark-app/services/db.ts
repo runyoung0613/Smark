@@ -35,6 +35,20 @@ export type DbQuickCard = {
   deleted_at: string | null;
 };
 
+type OutboxOp = 'upsert' | 'delete';
+type OutboxTable = 'articles' | 'highlights' | 'quick_cards';
+
+export type DbOutbox = {
+  id: string;
+  table_name: OutboxTable;
+  op: OutboxOp;
+  record_id: string;
+  payload: string;
+  created_at: string;
+  sent_at: string | null;
+  error: string | null;
+};
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -95,6 +109,19 @@ export async function initDb() {
         updated_at TEXT NOT NULL,
         deleted_at TEXT
       );
+
+      CREATE TABLE IF NOT EXISTS outbox (
+        id TEXT PRIMARY KEY NOT NULL,
+        table_name TEXT NOT NULL,
+        op TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        sent_at TEXT,
+        error TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS outbox_sent_at_idx ON outbox(sent_at);
     `);
     await migrateHighlightsInReviewColumn(db);
   })();
@@ -110,6 +137,48 @@ async function migrateHighlightsInReviewColumn(db: SQLite.SQLiteDatabase) {
   }
 }
 
+async function enqueueOutbox(input: {
+  table: OutboxTable;
+  op: OutboxOp;
+  recordId: string;
+  payload: unknown;
+  ts: string;
+}) {
+  const db = await getDb();
+  const id = uuid();
+  await db.runAsync(
+    `INSERT INTO outbox (id, table_name, op, record_id, payload, created_at, sent_at, error)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
+    [id, input.table, input.op, input.recordId, JSON.stringify(input.payload ?? null), input.ts]
+  );
+}
+
+export async function listPendingOutbox(limit = 100): Promise<DbOutbox[]> {
+  await initDb();
+  const db = await getDb();
+  const rows = await db.getAllAsync<DbOutbox>(
+    `SELECT * FROM outbox WHERE sent_at IS NULL ORDER BY created_at ASC LIMIT ?`,
+    [limit]
+  );
+  return rows;
+}
+
+export async function markOutboxSent(ids: string[]) {
+  if (!ids.length) return;
+  await initDb();
+  const db = await getDb();
+  const ts = nowIso();
+  for (const id of ids) {
+    await db.runAsync(`UPDATE outbox SET sent_at = ?, error = NULL WHERE id = ?`, [ts, id]);
+  }
+}
+
+export async function markOutboxError(id: string, error: string) {
+  await initDb();
+  const db = await getDb();
+  await db.runAsync(`UPDATE outbox SET error = ? WHERE id = ?`, [error.slice(0, 500), id]);
+}
+
 export async function createArticle(input: { title: string; content: string }) {
   await initDb();
   const db = await getDb();
@@ -120,6 +189,13 @@ export async function createArticle(input: { title: string; content: string }) {
      VALUES (?, ?, ?, ?, ?, NULL)`,
     [id, input.title.trim(), input.content, ts, ts]
   );
+  await enqueueOutbox({
+    table: 'articles',
+    op: 'upsert',
+    recordId: id,
+    payload: { id, title: input.title.trim(), content: input.content, created_at: ts, updated_at: ts, deleted_at: null },
+    ts,
+  });
   return id;
 }
 
@@ -151,6 +227,13 @@ export async function updateArticleContent(input: { id: string; content: string 
     ts,
     input.id,
   ]);
+  const row = await db.getFirstAsync<DbArticle>(
+    `SELECT * FROM articles WHERE id = ? AND deleted_at IS NULL`,
+    [input.id]
+  );
+  if (row) {
+    await enqueueOutbox({ table: 'articles', op: 'upsert', recordId: row.id, payload: row, ts });
+  }
 }
 
 /** 软删除文章及其下全部划线（复习池、列表等不再出现）。 */
@@ -167,6 +250,23 @@ export async function softDeleteArticle(articleId: string) {
     ts,
     articleId,
   ]);
+  await enqueueOutbox({
+    table: 'articles',
+    op: 'delete',
+    recordId: articleId,
+    payload: { id: articleId, deleted_at: ts, updated_at: ts },
+    ts,
+  });
+  const hls = await db.getAllAsync<DbHighlight>(`SELECT * FROM highlights WHERE article_id = ?`, [articleId]);
+  for (const h of hls) {
+    await enqueueOutbox({
+      table: 'highlights',
+      op: 'delete',
+      recordId: h.id,
+      payload: { id: h.id, article_id: h.article_id, deleted_at: ts, updated_at: ts },
+      ts,
+    });
+  }
 }
 
 export async function softDeleteAllHighlightsForArticle(articleId: string) {
@@ -177,6 +277,16 @@ export async function softDeleteAllHighlightsForArticle(articleId: string) {
     `UPDATE highlights SET deleted_at = ?, updated_at = ? WHERE article_id = ? AND deleted_at IS NULL`,
     [ts, ts, articleId]
   );
+  const hls = await db.getAllAsync<DbHighlight>(`SELECT * FROM highlights WHERE article_id = ?`, [articleId]);
+  for (const h of hls) {
+    await enqueueOutbox({
+      table: 'highlights',
+      op: 'delete',
+      recordId: h.id,
+      payload: { id: h.id, article_id: h.article_id, deleted_at: ts, updated_at: ts },
+      ts,
+    });
+  }
 }
 
 export async function listHighlights(articleId: string): Promise<DbHighlight[]> {
@@ -224,6 +334,19 @@ export async function createHighlight(input: {
      VALUES (?, ?, ?, ?, ?, NULL, ?, ?, NULL, 0)`,
     [id, input.articleId, input.start, input.end, input.quote, ts, ts]
   );
+  const payload: DbHighlight = {
+    id,
+    article_id: input.articleId,
+    start: input.start,
+    end: input.end,
+    quote: input.quote,
+    note: null,
+    created_at: ts,
+    updated_at: ts,
+    deleted_at: null,
+    in_review: 0,
+  };
+  await enqueueOutbox({ table: 'highlights', op: 'upsert', recordId: id, payload, ts });
   return id;
 }
 
@@ -236,6 +359,16 @@ export async function updateHighlightInReview(input: { id: string; inReview: boo
     ts,
     input.id,
   ]);
+  const row = await db.getFirstAsync<DbHighlight>(`SELECT * FROM highlights WHERE id = ?`, [input.id]);
+  if (row) {
+    await enqueueOutbox({
+      table: 'highlights',
+      op: 'upsert',
+      recordId: row.id,
+      payload: normalizeHighlightRow(row),
+      ts,
+    });
+  }
 }
 
 export async function updateHighlightNote(input: { id: string; note: string }) {
@@ -247,6 +380,16 @@ export async function updateHighlightNote(input: { id: string; note: string }) {
     ts,
     input.id,
   ]);
+  const row = await db.getFirstAsync<DbHighlight>(`SELECT * FROM highlights WHERE id = ?`, [input.id]);
+  if (row) {
+    await enqueueOutbox({
+      table: 'highlights',
+      op: 'upsert',
+      recordId: row.id,
+      payload: normalizeHighlightRow(row),
+      ts,
+    });
+  }
 }
 
 export async function deleteHighlight(id: string) {
@@ -258,6 +401,14 @@ export async function deleteHighlight(id: string) {
     ts,
     id,
   ]);
+  const row = await db.getFirstAsync<DbHighlight>(`SELECT * FROM highlights WHERE id = ?`, [id]);
+  await enqueueOutbox({
+    table: 'highlights',
+    op: 'delete',
+    recordId: id,
+    payload: { id, article_id: row?.article_id ?? null, deleted_at: ts, updated_at: ts },
+    ts,
+  });
 }
 
 export async function createQuickCard(input: { front: string; back?: string | null }) {
@@ -270,6 +421,15 @@ export async function createQuickCard(input: { front: string; back?: string | nu
      VALUES (?, ?, ?, ?, ?, NULL)`,
     [id, input.front.trim(), input.back ?? null, ts, ts]
   );
+  const payload: DbQuickCard = {
+    id,
+    front: input.front.trim(),
+    back: input.back ?? null,
+    created_at: ts,
+    updated_at: ts,
+    deleted_at: null,
+  };
+  await enqueueOutbox({ table: 'quick_cards', op: 'upsert', recordId: id, payload, ts });
   return id;
 }
 
@@ -287,5 +447,88 @@ export async function deleteQuickCard(id: string) {
   const db = await getDb();
   const ts = nowIso();
   await db.runAsync(`UPDATE quick_cards SET deleted_at = ?, updated_at = ? WHERE id = ?`, [ts, ts, id]);
+  await enqueueOutbox({
+    table: 'quick_cards',
+    op: 'delete',
+    recordId: id,
+    payload: { id, deleted_at: ts, updated_at: ts },
+    ts,
+  });
+}
+
+// Apply cloud changes to local SQLite (for sync pull)
+export async function upsertArticleFromCloud(row: any) {
+  await initDb();
+  const db = await getDb();
+  await db.runAsync(
+    `INSERT INTO articles (id, title, content, created_at, updated_at, deleted_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       title=excluded.title,
+       content=excluded.content,
+       updated_at=excluded.updated_at,
+       deleted_at=excluded.deleted_at`,
+    [
+      String(row.id),
+      String(row.title ?? ''),
+      String(row.content ?? ''),
+      String(row.created_at ?? nowIso()),
+      String(row.updated_at ?? nowIso()),
+      row.deleted_at ? String(row.deleted_at) : null,
+    ]
+  );
+}
+
+export async function upsertHighlightFromCloud(row: any) {
+  await initDb();
+  const db = await getDb();
+  const inReview = row.in_review === true || row.in_review === 1 ? 1 : 0;
+  await db.runAsync(
+    `INSERT INTO highlights (id, article_id, start, end, quote, note, created_at, updated_at, deleted_at, in_review)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       article_id=excluded.article_id,
+       start=excluded.start,
+       end=excluded.end,
+       quote=excluded.quote,
+       note=excluded.note,
+       updated_at=excluded.updated_at,
+       deleted_at=excluded.deleted_at,
+       in_review=excluded.in_review`,
+    [
+      String(row.id),
+      String(row.article_id),
+      Number(row.start ?? 0),
+      Number(row.end ?? 0),
+      String(row.quote ?? ''),
+      row.note == null ? null : String(row.note),
+      String(row.created_at ?? nowIso()),
+      String(row.updated_at ?? nowIso()),
+      row.deleted_at ? String(row.deleted_at) : null,
+      inReview,
+    ]
+  );
+}
+
+export async function upsertQuickCardFromCloud(row: any) {
+  await initDb();
+  const db = await getDb();
+  await db.runAsync(
+    `INSERT INTO quick_cards (id, front, back, created_at, updated_at, deleted_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       front=excluded.front,
+       back=excluded.back,
+       updated_at=excluded.updated_at,
+       deleted_at=excluded.deleted_at`,
+    [
+      String(row.id),
+      String(row.front ?? ''),
+      row.back == null ? null : String(row.back),
+      String(row.created_at ?? nowIso()),
+      String(row.updated_at ?? nowIso()),
+      row.deleted_at ? String(row.deleted_at) : null,
+    ]
+  );
 }
 

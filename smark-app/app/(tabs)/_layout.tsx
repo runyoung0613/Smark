@@ -5,6 +5,7 @@ export default function TabsLayout() {
     <Tabs>
       <Tabs.Screen name="index" options={{ title: '首页' }} />
       <Tabs.Screen name="review" options={{ title: '复习' }} />
+      <Tabs.Screen name="perses" options={{ title: 'Perses' }} />
       <Tabs.Screen name="profile" options={{ title: '我的' }} />
     </Tabs>
   );
