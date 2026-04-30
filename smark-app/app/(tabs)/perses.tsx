@@ -12,13 +12,15 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
 import { createQuickCard } from '../../services/db';
+import { loadPersistedConnectionSettings } from '../../services/appSettings';
+import { buildPersesRequestPayload } from '../../services/persesMemory';
 import { getSupabase, hasSupabaseConfig } from '../../services/supabase';
 
-const PERSES_API_URL_KEY = 'smark_perses_api_url';
-
 export default function PersesScreen() {
+  const router = useRouter();
   const scrollRef = useRef<ScrollView>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -94,8 +96,8 @@ export default function PersesScreen() {
           return (
             '（未配置 Perses 接口）\n' +
             '你可以：\n' +
-            '1) 在页面顶部填写 Perses API URL，然后再提问；或\n' +
-            '2) 配置 Supabase（.env），并登录后使用云端 perses_proxy。'
+            '1) 在「我的」中填写 Perses API URL（直连），然后再提问；或\n' +
+            '2) 配置 Supabase 并登录后使用云端 perses_proxy。'
           );
         }
         const supabase = getSupabase();
@@ -104,10 +106,11 @@ export default function PersesScreen() {
           return (
             '（未登录）\n' +
             '请先到「我的」用邮箱 OTP 登录，再回来使用云端 perses_proxy；\n' +
-            '或在顶部填写 Perses API URL 直接请求。'
+            '或在「我的」填写 Perses API URL 使用直连。'
           );
         }
-        const { data, error } = await supabase.functions.invoke('perses_proxy', { body: { prompt } });
+        const payload = await buildPersesRequestPayload(prompt);
+        const { data, error } = await supabase.functions.invoke('perses_proxy', { body: payload });
         if (error) return `（Perses 代理失败：${error.message ?? String(error)}）`;
         const text = (data as any)?.text ?? '';
         if (typeof text !== 'string' || !text.trim()) return '（Perses 代理返回为空）';
@@ -119,10 +122,11 @@ export default function PersesScreen() {
       abortRef.current = controller;
       const timeout = setTimeout(() => controller.abort(), 20000);
       try {
+        const payload = await buildPersesRequestPayload(prompt);
         const res = await fetch(u, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify(payload),
           signal: controller.signal,
         });
         if (!res.ok) return `（Perses 请求失败：HTTP ${res.status}）`;
@@ -156,30 +160,22 @@ export default function PersesScreen() {
     scrollToBottom();
   }, [draft, sending, callPerses, scrollToBottom]);
 
-  // 记住 Perses API 地址（入口里配置一次即可）
-  useEffect(() => {
-    let mounted = true;
-    void (async () => {
-      try {
-        const raw = await AsyncStorage.getItem(PERSES_API_URL_KEY);
-        if (!mounted) return;
-        if (raw && typeof raw === 'string') setApiUrl(raw);
-      } catch {
-        // ignore
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    const u = apiUrl.trim();
-    const t = setTimeout(() => {
-      void AsyncStorage.setItem(PERSES_API_URL_KEY, u);
-    }, 300);
-    return () => clearTimeout(t);
-  }, [apiUrl]);
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void (async () => {
+        try {
+          const c = await loadPersistedConnectionSettings();
+          if (!cancelled) setApiUrl(c.persesApiUrl);
+        } catch {
+          // ignore
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
 
   // 键盘高度监听：保证底部输入区永远在键盘之上
   useEffect(() => {
@@ -216,21 +212,22 @@ export default function PersesScreen() {
       >
         <Text style={styles.title}>Perses</Text>
         <Text style={styles.sub}>
-          提问→回复→编辑→一键加入 Quick Card。若要让 Perses 真正联网回答，请填写接口地址（POST JSON：{"{ prompt }"} → 返回 text/answer/message）。
+          提问→回复→编辑→一键加入 Quick Card。人设与记忆见下方入口（内置 SOUL / USER / MEMORY，可本地编辑并随请求一并发送）。
         </Text>
 
-        <View style={styles.section}>
-          <Text style={styles.label}>Perses API URL（可选）</Text>
-          <TextInput
-            value={apiUrl}
-            onChangeText={setApiUrl}
-            placeholder="例如：https://your-domain.com/perses"
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            style={styles.input}
-          />
-        </View>
+        <Pressable onPress={() => router.push('/perses-memory')} style={styles.memoryLink}>
+          <Text style={styles.memoryLinkText}>记忆与人设（SOUL / USER / MEMORY）</Text>
+        </Pressable>
+
+        <Pressable onPress={() => router.push('/(tabs)/profile')} style={styles.settingsLink}>
+          <Text style={styles.settingsLinkText}>Perses 直连地址与 Supabase：前往「我的」配置</Text>
+        </Pressable>
+
+        {apiUrl.trim() ? (
+          <Text style={styles.hint}>当前直连：{apiUrl.trim()}</Text>
+        ) : (
+          <Text style={styles.hint}>未设置直连地址时将尝试登录后的云端代理。</Text>
+        )}
 
         <View style={styles.thread}>
           {messages.map((m) => (
@@ -307,17 +304,24 @@ const styles = StyleSheet.create({
   scrollContent: { padding: 16, flexGrow: 1 },
   title: { fontSize: 24, fontWeight: '900', color: '#111827' },
   sub: { marginTop: 8, fontSize: 13, lineHeight: 18, color: '#6b7280' },
-  section: { marginTop: 14 },
-  label: { fontSize: 13, fontWeight: '800', color: '#111827' },
-  input: {
-    marginTop: 8,
+  memoryLink: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: '#111827',
     borderRadius: 12,
-    paddingHorizontal: 12,
     paddingVertical: 10,
-    color: '#111827',
+    paddingHorizontal: 14,
+    backgroundColor: '#f9fafb',
   },
+  memoryLinkText: { fontWeight: '900', color: '#111827', fontSize: 14 },
+  settingsLink: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+  },
+  settingsLinkText: { color: '#2563eb', fontWeight: '800', fontSize: 13 },
+  hint: { marginTop: 8, fontSize: 12, lineHeight: 17, color: '#6b7280' },
   thread: { marginTop: 14, gap: 12 },
   bubble: {
     borderWidth: 1,

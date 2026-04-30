@@ -1,41 +1,41 @@
-### Repo-wide ignores (Smark)
+### Repo-wide ignores（Smark，含原 smark-app/.gitignore 规则）
 
-# 1) 操作系统垃圾文件（不需要上传）
+# 1) 操作系统垃圾文件
 .DS_Store
 Thumbs.db
 Desktop.ini
 
-# 2) 编辑器 / IDE 本地配置（不需要上传）
+# 2) 编辑器 / IDE 本地配置
 .vscode/
 .idea/
 *.iml
 
-# 3) Cursor / Agent 本地产物（不需要上传）
+# 3) Cursor / Agent 本地产物
 .workbuddy/
 
-# 4) 日志与临时输出（不需要上传）
+# 4) 日志与临时输出
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# 5) 依赖与缓存（不需要上传，可再生）
+# 5) 依赖与缓存（全仓任意子目录）
 **/node_modules/
 **/.expo/
 **/.metro-health-check*
 **/*.tsbuildinfo
 
-# 6) 构建产物（不需要上传，可再构建）
+# 6) 构建产物
 **/dist/
 **/web-build/
 
-# 7) 环境变量与敏感信息（不需要上传）
+# 7) 环境变量与敏感信息
 **/.env
 **/.env.*
 !**/.env.example
 
-# 8) 原生工程与签名文件（默认不上传；仅在明确纳入版本管理时再调整）
+# 8) 原生工程与签名文件（默认不上传）
 **/android/
 **/ios/
 **/.kotlin/
@@ -47,9 +47,14 @@ pnpm-debug.log*
 **/*.mobileprovision
 **/*.orig.*
 
-# 9) patch-package 补丁（建议上传：属于业务修复代码）
+# 9) PEM 证书（本地/构建遗留）
+**/*.pem
+
+# 10) Expo 生成的 TypeScript 声明（可再生）
+**/expo-env.d.ts
+
+# 11) patch-package 补丁（需纳入版本管理）
 !**/patches/
 
-# 10) Supabase CLI 本地临时文件（不上传）
+# 12) Supabase CLI 本地临时文件
 supabase/.temp/
-

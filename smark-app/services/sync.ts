@@ -42,7 +42,7 @@ export async function saveLastSyncAt(iso: string) {
 
 export async function runSyncOnce(opts?: { outboxBatchSize?: number }) {
   if (!hasSupabaseConfig()) {
-    throw new Error('未配置 Supabase：请在 smark-app/.env 填写 EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_ANON_KEY');
+    throw new Error('未配置 Supabase：请在「我的」中填写项目地址与 anon key，或在 smark-app/.env 配置 EXPO_PUBLIC_*');
   }
   const supabase = getSupabase();
   const outboxBatchSize = opts?.outboxBatchSize ?? 100;

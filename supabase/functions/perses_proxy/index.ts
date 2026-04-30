@@ -1,5 +1,5 @@
 // Supabase Edge Function: perses_proxy
-// Request: { prompt: string }
+// Request: { prompt: string; soulMd?, userMd?, memoryMd?, runtimeSystemZh? }
 // Response: { text: string }
 //
 // This function keeps upstream keys on server side.
@@ -14,6 +14,22 @@ function json(status: number, body: unknown) {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function assemblePersesPrompt(parts: {
+  userMessage: string;
+  runtime?: string;
+  soul?: string;
+  user?: string;
+  memory?: string;
+}): string {
+  const sections: string[] = [];
+  if (parts.runtime?.trim()) sections.push(`[运行时规则]\n${parts.runtime.trim()}`);
+  if (parts.soul?.trim()) sections.push(`[SOUL.md]\n${parts.soul.trim()}`);
+  if (parts.user?.trim()) sections.push(`[USER.md]\n${parts.user.trim()}`);
+  if (parts.memory?.trim()) sections.push(`[MEMORY.md]\n${parts.memory.trim()}`);
+  sections.push(`[用户本轮]\n${parts.userMessage.trim()}`);
+  return sections.join('\n\n---\n\n');
 }
 
 Deno.serve(async (req) => {
@@ -38,14 +54,30 @@ Deno.serve(async (req) => {
   if (!upstreamUrl) return json(500, { error: 'Missing env: PERSES_UPSTREAM_URL' });
 
   let prompt = '';
+  let soulMd = '';
+  let userMd = '';
+  let memoryMd = '';
+  let runtimeSystemZh = '';
   try {
     const body = await req.json();
     prompt = typeof body?.prompt === 'string' ? body.prompt : '';
+    soulMd = typeof body?.soulMd === 'string' ? body.soulMd : '';
+    userMd = typeof body?.userMd === 'string' ? body.userMd : '';
+    memoryMd = typeof body?.memoryMd === 'string' ? body.memoryMd : '';
+    runtimeSystemZh = typeof body?.runtimeSystemZh === 'string' ? body.runtimeSystemZh : '';
   } catch {
     return json(400, { error: 'Invalid JSON' });
   }
   prompt = prompt.trim();
   if (!prompt) return json(400, { error: 'Missing prompt' });
+
+  const upstreamPrompt = assemblePersesPrompt({
+    userMessage: prompt,
+    runtime: runtimeSystemZh,
+    soul: soulMd,
+    user: userMd,
+    memory: memoryMd,
+  });
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const extraHeader = (Deno.env.get('PERSES_UPSTREAM_AUTH_HEADER') ?? '').trim();
@@ -60,7 +92,7 @@ Deno.serve(async (req) => {
     const res = await fetch(upstreamUrl, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt: upstreamPrompt }),
     });
     if (!res.ok) return json(502, { error: `Upstream error: HTTP ${res.status}` });
     const data: any = await res.json().catch(() => null);

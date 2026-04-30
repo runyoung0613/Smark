@@ -1,7 +1,9 @@
 # Smark（阅记）— 开发进度与实现细节
 
 > **用途**：给协作者与 AI 助手看的「当前代码与进度真值」。产品愿景与路线图见仓库根目录 [`README.md`](README.md)。  
-> **最后同步代码状态**：2026-04-14（以仓库 `smark-app/` 为准）
+> **最后同步代码状态**：2026-04-30（以仓库 `smark-app/` 为准）
+
+**协作者 / AI 助手**：每次开工或提交前应先阅读本节与下方「已实现功能」真值；完成功能或行为变更后，**必须同步更新 `claude.md`**（必要时再更新 `README.md`），避免文档与代码漂移。
 
 ---
 
@@ -113,15 +115,24 @@
 
 - [`smark-app/app/(tabs)/profile.tsx`](smark-app/app/(tabs)/profile.tsx)：**占位**；文案说明后续 Supabase 登录与同步。
 
+### 2.9 Perses（对话 + 人设文件）
+
+- **内置默认文案**：`docs/perses/memory/SOUL.md`、`USER.md`、`MEMORY.md` 与 [`docs/perses/PERSES_RUNTIME_SYSTEM.zh.md`](docs/perses/PERSES_RUNTIME_SYSTEM.zh.md) 为真源；经脚本生成与 App 集成的副本为 [`smark-app/services/persesBundled.ts`](smark-app/services/persesBundled.ts)（勿手改该生成文件，改 docs 后重新生成）。
+- **生成命令**（仓库根目录）：`node scripts/embed-perses-bundled.js`
+- **本地持久化**：[`smark-app/services/persesMemory.ts`](smark-app/services/persesMemory.ts) 用 AsyncStorage 存用户编辑后的三文件内容；未保存覆盖时使用 `persesBundled` 默认。
+- **UI**：[`smark-app/app/(tabs)/perses.tsx`](smark-app/app/(tabs)/perses.tsx) 对话；[`smark-app/app/perses-memory.tsx`](smark-app/app/perses-memory.tsx) 编辑 SOUL / USER / MEMORY；路由在 [`smark-app/app/_layout.tsx`](smark-app/app/_layout.tsx) 注册为 `perses-memory`。
+- **请求体**：发送对话时附带 `prompt`、`soulMd`、`userMd`、`memoryMd`、`runtimeSystemZh`（由 `buildPersesRequestPayload` 组装）。直连自定义 API 与 Supabase [`perses_proxy`](supabase/functions/perses_proxy/index.ts) 均支持；Edge 端将五段拼成一条 `prompt` 再转发上游 `PERSES_UPSTREAM_URL`（仍为 JSON `{ prompt }`）。
+
 ---
 
 ## 3. 依赖与工程
 
 - **目录**：可运行代码在 [`smark-app/`](smark-app/)（Expo SDK 54、Expo Router、TypeScript）。
-- **主要依赖**：`expo`、`expo-router`、`expo-sqlite`、`react-native-webview`、`@react-native-async-storage/async-storage`、`expo-haptics`、`zustand`（已装；业务仍以组件 state + DB 为主）。
+- **主要依赖**：`expo`、`expo-router`、`expo-sqlite`、`react-native-webview`、`@react-native-async-storage/async-storage`、`expo-haptics`；业务状态以组件 state + DB 为主。
 - **原生补丁**：`patch-package`（`devDependencies`）；安装依赖后自动执行 `patch-package`，对 `react-native-webview` Android `RNCWebView` 的文本选择 `ActionMode` 行为打补丁。补丁在 **`expo run:android` / EAS Build 等会编译本机 `node_modules` 原生代码的流程** 中生效；**Expo Go 自带预编译原生**，不会应用仓库内对 `RNCWebView.java` 的修改，Android 上若仍出现系统选词条与 RN 工具条冲突，需改用 **Dev Client** 或正式构建验证。
 - **真机调试**：`cd smark-app && npx expo start`；跨网用 `npx expo start --tunnel`。需在 **`smark-app`** 下执行，勿在仓库根目录无 `package.json` 处执行。
 - **npm**：若 `ERESOLVE` peer 冲突，可使用 `npm install --legacy-peer-deps`。
+- **Perses 文案嵌入**：修改 `docs/perses/` 下 Markdown 后，在仓库根目录执行 `node scripts/embed-perses-bundled.js`，再提交 `smark-app/services/persesBundled.ts`。
 
 ---
 
@@ -131,7 +142,7 @@
 - **WebView 整页重载**：新划线后仍会更新 `source` 导致整页重载；当前用 **滚动恢复** 缓解回顶；若要「零闪」需 M1+ 方案（例如 `injectJavaScript` 在 DOM 内包 span、延迟 `setHighlights` 等），尚未实现。
 - **Android 文本选择**：依赖上游 WebView + 本仓库补丁；大版本升级 `react-native-webview` 后需复查补丁是否仍适用或已合并上游。
 - **平台**：规划为 Android 为主；`ToastAndroid` 等部分反馈未做 iOS 等价实现。
-- **Zustand / 组件库**：README 规划中曾列出的 `components/`、`hooks/`、`summary/` 等**当前仓库不存在**；以本节文件列表为准。
+- **组件库**：README 规划中曾列出的 `components/`、`hooks/`、`summary/` 等**当前仓库不存在**；以本节文件列表为准。
 
 ---
 
@@ -145,8 +156,10 @@
 
 ## 6. 协作提示
 
+- **文档**：行为或架构有变时先更新 `claude.md` 真值；对外说明再改 `README.md`。
 - 改阅读行为时优先改 [`read/[id].tsx`](smark-app/app/read/[id].tsx) 与 [`readerPrefs.ts`](smark-app/services/readerPrefs.ts)。
 - 改数据结构时改 [`db.ts`](smark-app/services/db.ts) 并评估迁移（MVP 阶段可接受卸载重装清库）。
+- 改 Perses 默认人设/运行时提示时改 `docs/perses/`，运行 `node scripts/embed-perses-bundled.js`，提交 `persesBundled.ts`。
 
 ---
 
@@ -236,5 +249,5 @@
 ## 9. 文档职责边界（README vs claude）
 
 - `README.md`：面向项目使用者与新开发者，目标是“快速理解项目做什么、怎么跑起来、怎么验证成果（含跨网络 Expo）”。
-- `claude.md`：面向协作者与 AI，目标是“当前实现真值 + 可执行规划 + 风险与验证标准”。
+- `claude.md`：面向协作者与 AI，目标是“当前实现真值 + 可执行规划 + 风险与验证标准”；**Cursor / AI 助手每次完成任务或改动行为前应对照本节真值，完成后若行为或架构有变须更新本章**。
 - 维护原则：功能行为有变化时先更新 `claude.md` 真值，再回写 `README.md` 的对外说明，避免两份文档相互漂移。

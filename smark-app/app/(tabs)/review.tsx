@@ -1,5 +1,5 @@
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   Keyboard,
@@ -41,8 +41,6 @@ export default function ReviewScreen() {
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [quickDraft, setQuickDraft] = useState('');
   const [keyboardHeight, setKeyboardHeight] = useState(0);
-  const [dockHeight, setDockHeight] = useState(0);
-  const scrollRef = useRef<ScrollView>(null);
 
   const current = useMemo(() => {
     if (!items.length) return null;
@@ -50,24 +48,13 @@ export default function ReviewScreen() {
     return pickRandom(items);
   }, [items, currentId]);
 
-  const scrollToBottom = useCallback(() => {
-    // 确保底部「换一条」按钮在键盘弹出时也可见、可点击
-    requestAnimationFrame(() => {
-      scrollRef.current?.scrollToEnd({ animated: true });
-    });
-  }, []);
-
   useFocusEffect(
     useCallback(() => {
-      // Android（尤其 edge-to-edge / 第三方输入法）下，KeyboardAvoidingView 容易失效；
-      // 这里直接用键盘事件的高度把底部输入区抬起来，最稳。
+      // Android（尤其 edge-to-edge / 第三方输入法）下，用键盘高度给 ScrollView 底部留白，
+      // 避免「换一条」等下方内容被键盘挡住。
       const showSub = Keyboard.addListener(
         Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
-        (e) => {
-          setKeyboardHeight(e.endCoordinates?.height ?? 0);
-          // 等布局应用后再滚动，避免滚动不生效
-          setTimeout(scrollToBottom, 50);
-        }
+        (e) => setKeyboardHeight(e.endCoordinates?.height ?? 0)
       );
       const hideSub = Keyboard.addListener(
         Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
@@ -77,7 +64,7 @@ export default function ReviewScreen() {
         showSub.remove();
         hideSub.remove();
       };
-    }, [scrollToBottom])
+    }, [])
   );
 
   const refresh = useCallback(async () => {
@@ -177,23 +164,29 @@ export default function ReviewScreen() {
   return (
     <View style={styles.root}>
       <ScrollView
-        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={[
           styles.scrollContent,
-          {
-            // 预留底部输入区高度；键盘弹出时再额外加上键盘高度，
-            // 保证“换一条”等内容不会被底部输入区/键盘遮住。
-            paddingBottom: 12 + dockHeight + keyboardHeight,
-          },
+          { paddingBottom: 12 + keyboardHeight },
         ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator
       >
           <Text style={styles.title}>随机复习池</Text>
-          <Text style={styles.sub}>
-            从「已勾选复习的划线句子（可回原文定位）」与「Quick Card 展示板」合并随机抽取。
-          </Text>
+          <Text style={styles.sub}>划线复习与 Quick Card 合并随机。</Text>
+
+          <View style={styles.quickSection}>
+            <Text style={styles.quickLabel}>添加 Quick Card</Text>
+            <TextInput
+              value={quickDraft}
+              onChangeText={setQuickDraft}
+              placeholder="一个你想随手看到的句子"
+              style={styles.input}
+            />
+            <Pressable onPress={addQuick} style={[styles.btn, styles.quickAddBtn]}>
+              <Text style={styles.btnText}>加入展示池</Text>
+            </Pressable>
+          </View>
 
           <View style={styles.card}>
             {current ? (
@@ -229,23 +222,6 @@ export default function ReviewScreen() {
             <Text style={styles.btnText}>换一条</Text>
           </Pressable>
       </ScrollView>
-
-      <View
-        style={[styles.quickDock, { bottom: keyboardHeight }]}
-        onLayout={(e) => setDockHeight(e.nativeEvent.layout.height)}
-      >
-        <Text style={styles.quickLabel}>添加 Quick Card</Text>
-        <TextInput
-          value={quickDraft}
-          onChangeText={setQuickDraft}
-          onFocus={scrollToBottom}
-          placeholder="一个你想随手看到的句子"
-          style={styles.input}
-        />
-        <Pressable onPress={addQuick} style={[styles.btn, { marginTop: 10 }]}>
-          <Text style={styles.btnText}>加入展示池</Text>
-        </Pressable>
-      </View>
     </View>
   );
 }
@@ -256,8 +232,15 @@ const styles = StyleSheet.create({
   scrollContent: { padding: 16, paddingBottom: 12 },
   title: { fontSize: 22, fontWeight: '800', color: '#111827' },
   sub: { marginTop: 6, fontSize: 13, color: '#6b7280', lineHeight: 18 },
-  card: {
+  quickSection: {
     marginTop: 14,
+    paddingBottom: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  quickAddBtn: { marginTop: 10 },
+  card: {
+    marginTop: 16,
     borderWidth: 1,
     borderColor: '#e5e7eb',
     borderRadius: 14,
@@ -295,18 +278,6 @@ const styles = StyleSheet.create({
   },
   btnDisabled: { opacity: 0.45 },
   btnText: { color: '#fff', fontWeight: '800' },
-  quickDock: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    borderTopWidth: 1,
-    borderTopColor: '#f3f4f6',
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 16,
-    backgroundColor: '#fff',
-  },
   quickLabel: { fontWeight: '800', color: '#111827' },
   input: {
     marginTop: 10,

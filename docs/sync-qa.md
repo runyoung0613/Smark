@@ -96,7 +96,7 @@
 - 确保已登录
 - Perses 页顶部 API URL 留空
 - 提问
-- 预期：能返回回答；回答可编辑并加入 Quick Card；同步后能在另一设备拉取到该 Quick Card
+- 预期：能返回回答；回答可编辑并加入 Quick Card；同步后能在另一设备拉取到该 Quick Card（App 会将本地 SOUL / USER / MEMORY 与运行时协议一并发给 `perses_proxy`，由 Edge 拼成一条 `prompt` 转发 `PERSES_UPSTREAM_URL`）。
 
 ## 6. 常见故障排查
 - 同步失败且提示 401：
