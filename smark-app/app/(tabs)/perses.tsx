@@ -23,13 +23,38 @@ import {
   assemblePersesPromptFromPayload,
   buildPersesRequestPayload,
   getDashScopeCompatibleModel,
+  getDeepSeekCompatibleModel,
   isDashScopeOpenAICompatibleUrl,
+  isDeepSeekOpenAICompatibleUrl,
   resolveDashScopeChatCompletionsUrl,
+  resolveDeepSeekChatCompletionsUrl,
 } from '../../services/persesMemory';
 import { getSupabase, hasSupabaseConfig } from '../../services/supabase';
 
 const MODAL_INPUT_MIN_H = 100;
 const MODAL_INPUT_MAX_H = 240;
+
+type ChatMsg = { id: string; role: 'user' | 'assistant'; text: string; createdAt: string };
+
+function msgNowIso() {
+  return new Date().toISOString();
+}
+
+function formatAssistantCardTime(iso: string) {
+  try {
+    return new Date(iso).toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    });
+  } catch {
+    return '';
+  }
+}
 
 export default function PersesScreen() {
   const router = useRouter();
@@ -38,6 +63,7 @@ export default function PersesScreen() {
   const abortRef = useRef<AbortController | null>(null);
 
   const [persesDashScopeModel, setPersesDashScopeModel] = useState('');
+  const [persesDeepSeekModel, setPersesDeepSeekModel] = useState('');
   const [persesApiKey, setPersesApiKey] = useState('');
   /** 旧版本保存在「Perses API URL」中的直连完整地址，兼容读取 */
   const [legacyPersesUrl, setLegacyPersesUrl] = useState('');
@@ -46,11 +72,12 @@ export default function PersesScreen() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [dockHeight, setDockHeight] = useState(0);
 
-  const [messages, setMessages] = useState<Array<{ id: string; role: 'user' | 'assistant'; text: string }>>([
+  const [messages, setMessages] = useState<ChatMsg[]>([
     {
       id: 'hello',
       role: 'assistant',
       text: '我是Perses，你可以向我提问，我会给出回复，你可以编辑我的回复，一键加入Quick Card。',
+      createdAt: msgNowIso(),
     },
   ]);
 
@@ -155,7 +182,13 @@ export default function PersesScreen() {
 
       const urlForFetch = useKeyDirect ? endpointForBearer : storedHttp;
       const dashScope = isDashScopeOpenAICompatibleUrl(urlForFetch);
-      const requestUrl = dashScope ? resolveDashScopeChatCompletionsUrl(urlForFetch) : urlForFetch;
+      const deepSeek = isDeepSeekOpenAICompatibleUrl(urlForFetch);
+      const requestUrl = dashScope
+        ? resolveDashScopeChatCompletionsUrl(urlForFetch)
+        : deepSeek
+          ? resolveDeepSeekChatCompletionsUrl(urlForFetch)
+          : urlForFetch;
+      const openAiCompat = dashScope || deepSeek;
 
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -167,9 +200,11 @@ export default function PersesScreen() {
         if (useKeyDirect) {
           headers.Authorization = `Bearer ${key}`;
         }
-        const bodyJson = dashScope
+        const bodyJson = openAiCompat
           ? JSON.stringify({
-              model: getDashScopeCompatibleModel(persesDashScopeModel),
+              model: dashScope
+                ? getDashScopeCompatibleModel(persesDashScopeModel)
+                : getDeepSeekCompatibleModel(persesDeepSeekModel),
               messages: [{ role: 'user' as const, content: assemblePersesPromptFromPayload(payload) }],
             })
           : JSON.stringify(payload);
@@ -179,23 +214,42 @@ export default function PersesScreen() {
           body: bodyJson,
           signal: controller.signal,
         });
-        if (!res.ok) return `（Perses 请求失败：HTTP ${res.status}）`;
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => '');
+          const hint = errBody.replace(/\s+/g, ' ').trim().slice(0, 200);
+          const pathOnly = requestUrl.replace(/^https?:\/\/[^/?#]+/i, '') || '/';
+          let line = `（HTTP ${res.status}${hint ? `：${hint}` : ''}`;
+          if (res.status === 404) {
+            line += `｜POST 路径：${pathOnly.slice(0, 140)}`;
+            line += dashScope
+              ? '｜百炼：请确认 Base 为 …/compatible-mode/v1（保存后会自动补 …/chat/completions）'
+              : deepSeek
+                ? '｜DeepSeek：Base 为 https://api.deepseek.com，将自动 POST …/chat/completions（见官方文档）'
+                : '｜直连：请填文档里的「完整 POST 地址」，仅域名或根路径常会 404；请求体为 prompt/soulMd 等 JSON';
+          }
+          line += '）';
+          return line;
+        }
         const data: any = await res.json().catch(() => null);
-        const text = dashScope
+        const text = openAiCompat
           ? (typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content : '')
           : (data?.text ?? data?.answer ?? data?.message ?? '');
         if (typeof text !== 'string' || !text.trim())
           return dashScope
             ? '（百炼返回为空：请检查模型名 EXPO_PUBLIC_PERSES_DASHSCOPE_MODEL 与账号权限）'
-            : '（Perses 返回为空：请检查接口返回字段 text/answer/message）';
+            : deepSeek
+              ? '（DeepSeek 返回为空：请检查模型名 EXPO_PUBLIC_PERSES_DEEPSEEK_MODEL 与 API Key）'
+              : '（Perses 返回为空：请检查接口返回字段 text/answer/message）';
         return text.trim();
       } catch (e: any) {
-        return e?.name === 'AbortError' ? '（Perses 请求超时/已取消）' : '（Perses 请求失败：请检查网络与密钥）';
+        if (e?.name === 'AbortError') return '（Perses 请求超时/已取消）';
+        const detail = typeof e?.message === 'string' && e.message.trim() ? e.message.trim().slice(0, 220) : '';
+        return `（网络层失败${detail ? `：${detail}` : ''}。若刚换 API：确认个人中心已保存新地址；仅改 .env 需重启 npx expo start -c；本机曾保存的接入地址会覆盖 .env）`;
       } finally {
         clearTimeout(timeout);
       }
     },
-    [persesApiKey, legacyPersesUrl, persesDashScopeModel]
+    [persesApiKey, legacyPersesUrl, persesDashScopeModel, persesDeepSeekModel]
   );
 
   const onSend = useCallback(async () => {
@@ -204,12 +258,12 @@ export default function PersesScreen() {
     setDraft('');
     setSending(true);
 
-    const userMsg = { id: String(Date.now()) + '-u', role: 'user' as const, text: q };
+    const userMsg: ChatMsg = { id: String(Date.now()) + '-u', role: 'user', text: q, createdAt: msgNowIso() };
     setMessages((prev) => [...prev, userMsg]);
     scrollToBottom();
 
     const answer = await callPerses(q);
-    const aiMsg = { id: String(Date.now()) + '-a', role: 'assistant' as const, text: answer };
+    const aiMsg: ChatMsg = { id: String(Date.now()) + '-a', role: 'assistant', text: answer, createdAt: msgNowIso() };
     setMessages((prev) => [...prev, aiMsg]);
     setSending(false);
     scrollToBottom();
@@ -225,6 +279,7 @@ export default function PersesScreen() {
             setPersesApiKey(c.persesApiKey);
             setLegacyPersesUrl(c.persesApiUrl);
             setPersesDashScopeModel(c.persesDashScopeModel ?? '');
+            setPersesDeepSeekModel(c.persesDeepSeekModel ?? '');
           }
         } catch {
           // ignore
@@ -285,19 +340,21 @@ export default function PersesScreen() {
               </View>
             ) : (
               <View key={m.id} style={[styles.msgRow, styles.msgRowAssistant]}>
-                <View style={styles.assistantBundle}>
+                <View style={styles.assistantBubbleWrap}>
                   <View style={[styles.bubble, styles.bubbleAi]}>
                     <Text style={styles.bubbleTextAi}>{m.text}</Text>
+                    <View style={styles.bubbleAiFooter}>
+                      <Text style={styles.bubbleAiTime}>{formatAssistantCardTime(m.createdAt)}</Text>
+                      <Pressable
+                        onPress={() => openEditForMessage(m.id, m.text)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        accessibilityRole="button"
+                        accessibilityLabel="编辑后加入 Quick Card"
+                      >
+                        <Text style={styles.linkEdit}>编辑</Text>
+                      </Pressable>
+                    </View>
                   </View>
-                  <Pressable
-                    onPress={() => openEditForMessage(m.id, m.text)}
-                    style={({ pressed }) => [styles.assistantAction, pressed && styles.assistantActionPressed]}
-                    hitSlop={{ top: 6, bottom: 6, left: 8, right: 8 }}
-                    accessibilityRole="button"
-                    accessibilityLabel="编辑后加入 Quick Card"
-                  >
-                    <Text style={styles.assistantActionText}>编辑 · 加入 Quick Card</Text>
-                  </Pressable>
                 </View>
               </View>
             )
@@ -305,7 +362,7 @@ export default function PersesScreen() {
 
           {sending ? (
             <View style={[styles.msgRow, styles.msgRowAssistant]}>
-              <View style={styles.assistantBundle}>
+              <View style={styles.assistantBubbleWrap}>
                 <View style={[styles.bubble, styles.bubbleAi, styles.bubbleAiThinking]}>
                   <View style={styles.thinkingRow}>
                     <ActivityIndicator size="small" color="#64748b" />
@@ -411,20 +468,20 @@ const styles = StyleSheet.create({
   msgRow: { width: '100%', flexDirection: 'row' },
   msgRowUser: { justifyContent: 'flex-end' },
   msgRowAssistant: { justifyContent: 'flex-start' },
-  assistantBundle: {
+  assistantBubbleWrap: {
     maxWidth: '88%',
     alignSelf: 'flex-start',
   },
   bubble: {
     maxWidth: '100%',
-    borderRadius: 20,
     paddingHorizontal: 15,
     paddingVertical: 12,
   },
   bubbleUser: {
     maxWidth: '82%',
     backgroundColor: '#111827',
-    borderBottomRightRadius: 6,
+    borderRadius: 20,
+    borderBottomRightRadius: 5,
     ...Platform.select({
       ios: {
         shadowColor: '#0f172a',
@@ -435,16 +492,21 @@ const styles = StyleSheet.create({
       android: { elevation: 2 },
     }),
   },
+  /** 左侧助手：对话气泡形（左下小圆角作「尾巴」，其余为大圆角） */
   bubbleAi: {
     backgroundColor: '#ffffff',
-    borderBottomLeftRadius: 6,
-    borderWidth: 0,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e2e8f0',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderBottomRightRadius: 20,
+    borderBottomLeftRadius: 5,
     ...Platform.select({
       ios: {
         shadowColor: '#0f172a',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.07,
-        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.08,
+        shadowRadius: 4,
       },
       android: { elevation: 2 },
     }),
@@ -464,22 +526,20 @@ const styles = StyleSheet.create({
     color: '#1e293b',
     letterSpacing: 0.1,
   },
+  bubbleAiFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#f1f5f9',
+  },
+  bubbleAiTime: { fontSize: 11, color: '#94a3b8', flex: 1, marginRight: 10 },
+  /** 与文章列表「编辑」一致 */
+  linkEdit: { fontSize: 14, fontWeight: '700', color: '#1d4ed8' },
   thinkingRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   thinkingText: { fontSize: 14, lineHeight: 20, color: '#64748b', letterSpacing: 0.2 },
-  assistantAction: {
-    alignSelf: 'flex-start',
-    marginTop: 8,
-    marginLeft: 2,
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-  },
-  assistantActionPressed: { opacity: 0.65 },
-  assistantActionText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#475569',
-    letterSpacing: 0.2,
-  },
   dock: {
     position: 'absolute',
     left: 0,

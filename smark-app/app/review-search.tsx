@@ -3,8 +3,10 @@ import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
+  Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -40,6 +42,7 @@ export default function ReviewSearchScreen() {
   const inputRef = useRef<TextInput>(null);
   const [cards, setCards] = useState<DbQuickCard[]>([]);
   const [query, setQuery] = useState('');
+  const [detail, setDetail] = useState<DbQuickCard | null>(null);
 
   const load = useCallback(async () => {
     const rows = await listQuickCards();
@@ -117,7 +120,12 @@ export default function ReviewSearchScreen() {
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
           renderItem={({ item }) => (
-            <View style={[tabListCard.card, styles.hitCard]}>
+            <Pressable
+              onPress={() => setDetail(item)}
+              style={({ pressed }) => [tabListCard.card, styles.hitCard, pressed && styles.hitCardPressed]}
+              accessibilityRole="button"
+              accessibilityLabel="查看全文"
+            >
               <Text style={tabListCard.cardTitle} numberOfLines={1} ellipsizeMode="tail">
                 {item.front}
               </Text>
@@ -127,7 +135,7 @@ export default function ReviewSearchScreen() {
                 </Text>
               ) : null}
               <Text style={tabListCard.cardMeta}>{formatCardTime(item.updated_at)}</Text>
-            </View>
+            </Pressable>
           )}
         />
       ) : (
@@ -135,6 +143,55 @@ export default function ReviewSearchScreen() {
           <Text style={styles.noHit}>无匹配的 Quick Card</Text>
         </View>
       )}
+
+      <Modal
+        visible={!!detail}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDetail(null)}
+      >
+        <View style={styles.detailModalRoot}>
+          <Pressable style={styles.detailModalBackdrop} onPress={() => setDetail(null)} accessibilityLabel="关闭" />
+          <View style={[styles.detailModalCard, { paddingBottom: 16 + insets.bottom }]}>
+            <Text style={styles.detailModalTitle}>Quick Card 全文</Text>
+            <ScrollView
+              style={styles.detailModalScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.detailSectionLabel}>正文</Text>
+              <Text style={styles.detailBody}>{detail?.front ?? ''}</Text>
+              {detail?.back ? (
+                <>
+                  <Text style={[styles.detailSectionLabel, styles.detailSectionLabelSpaced]}>备注</Text>
+                  <Text style={styles.detailBody}>{detail.back}</Text>
+                </>
+              ) : null}
+              <Text style={styles.detailMeta}>{detail ? formatCardTime(detail.updated_at) : ''}</Text>
+            </ScrollView>
+            <View style={styles.detailActions}>
+              <Pressable
+                onPress={() => setDetail(null)}
+                style={({ pressed }) => [styles.detailBtnGhost, pressed && styles.detailBtnPressed]}
+                accessibilityRole="button"
+              >
+                <Text style={styles.detailBtnGhostText}>关闭</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  const id = detail?.id;
+                  setDetail(null);
+                  if (id) router.push({ pathname: '/quick-cards', params: { editId: id } });
+                }}
+                style={({ pressed }) => [styles.detailBtnSolid, pressed && styles.detailBtnPressed]}
+                accessibilityRole="button"
+              >
+                <Text style={styles.detailBtnSolidText}>编辑</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -192,6 +249,51 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
   },
   hitCard: { marginBottom: 10 },
+  hitCardPressed: { opacity: 0.92 },
+  detailModalRoot: { flex: 1, justifyContent: 'flex-end' },
+  detailModalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,23,42,0.45)' },
+  detailModalCard: {
+    maxHeight: '88%',
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e7eb',
+  },
+  detailModalTitle: { fontSize: 17, fontWeight: '800', color: '#111827', marginBottom: 12 },
+  detailModalScroll: { maxHeight: 420 },
+  detailSectionLabel: { fontSize: 12, fontWeight: '700', color: '#6b7280', marginBottom: 6 },
+  detailSectionLabelSpaced: { marginTop: 16 },
+  detailBody: { fontSize: 16, lineHeight: 24, color: '#1f2937' },
+  detailMeta: { marginTop: 16, fontSize: 12, color: '#9ca3af' },
+  detailActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#eef0f3',
+  },
+  detailBtnGhost: {
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    backgroundColor: '#f3f4f6',
+  },
+  detailBtnGhostText: { fontSize: 15, fontWeight: '700', color: '#374151' },
+  detailBtnSolid: {
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    backgroundColor: '#111827',
+  },
+  detailBtnSolidText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  detailBtnPressed: { opacity: 0.88 },
   emptyHintWrap: {
     flex: 1,
     paddingHorizontal: 24,

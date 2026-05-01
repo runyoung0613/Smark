@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -45,20 +45,46 @@ function formatFooterTimestamp(iso: string) {
 export default function QuickCardsScreen() {
   const insets = useSafeAreaInsets();
   const rowRefs = useRef<Map<string, Swipeable>>(new Map());
+  const params = useLocalSearchParams<{ editId?: string | string[] }>();
+  const editIdFromRoute = useMemo(() => {
+    const raw = params.editId;
+    if (typeof raw === 'string' && raw.trim()) return raw.trim();
+    if (Array.isArray(raw) && raw[0]?.trim()) return raw[0].trim();
+    return undefined;
+  }, [params.editId]);
+
   const [cards, setCards] = useState<DbQuickCard[]>([]);
   const [editing, setEditing] = useState<DbQuickCard | null>(null);
   const [draftFront, setDraftFront] = useState('');
   const [draftBack, setDraftBack] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<DbQuickCard[]> => {
     const rows = await listQuickCards();
     setCards(rows);
+    return rows;
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      void load();
-    }, [load])
+      let cancelled = false;
+      void (async () => {
+        const rows = await load();
+        if (cancelled) return;
+        const eid = editIdFromRoute;
+        if (eid) {
+          const card = rows.find((r) => r.id === eid);
+          if (card) {
+            setEditing(card);
+            setDraftFront(card.front);
+            setDraftBack(card.back ?? '');
+            router.replace('/quick-cards');
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [editIdFromRoute, load])
   );
 
   function goBack() {

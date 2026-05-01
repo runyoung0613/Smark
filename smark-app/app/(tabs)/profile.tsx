@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -26,13 +26,18 @@ import {
 import { loadPersistedConnectionSettings, savePersistedConnectionSettings } from '../../services/appSettings';
 import {
   DASHSCOPE_CHAT_MODEL_PRESETS,
+  DEEPSEEK_CHAT_MODEL_PRESETS,
   getDashScopeCompatibleModel,
+  getDeepSeekCompatibleModel,
   isDashScopeOpenAICompatibleUrl,
+  isDeepSeekOpenAICompatibleUrl,
 } from '../../services/persesMemory';
 import { loadLastSyncAt, runSyncOnce } from '../../services/sync';
 import { getSupabase, hasSupabaseConfig } from '../../services/supabase';
 
 type MainTab = 'activity' | 'mine';
+
+type FeedKindTab = 'article' | 'highlight' | 'quick_card';
 
 function formatActivityTime(iso: string) {
   try {
@@ -76,6 +81,51 @@ function formatLastSyncDisplay(iso: string | null) {
   });
 }
 
+function StatsMetricRow({ label, value }: { label: string; value: number }) {
+  return (
+    <View style={statsPlainStyles.metricRow}>
+      <Text style={statsPlainStyles.metricLabel}>{label}</Text>
+      <Text style={statsPlainStyles.metricValue}>{value}</Text>
+    </View>
+  );
+}
+
+const statsPlainStyles = StyleSheet.create({
+  card: {
+    marginTop: 10,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#fafafa',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  heroRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  heroLabel: { flex: 1, fontSize: 15, fontWeight: '700', color: '#111827' },
+  heroValue: { fontSize: 28, fontWeight: '800', color: '#111827', letterSpacing: -0.6 },
+  footnote: { marginTop: 8, fontSize: 12, color: '#9ca3af', lineHeight: 17 },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#e5e7eb',
+    marginVertical: 14,
+  },
+  sectionTitle: { fontSize: 12, fontWeight: '800', color: '#6b7280', marginBottom: 4, letterSpacing: 0.3 },
+  metricRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    paddingVertical: 9,
+    gap: 12,
+  },
+  metricLabel: { flex: 1, fontSize: 14, color: '#374151' },
+  metricValue: { fontSize: 15, fontWeight: '700', color: '#111827', fontVariant: ['tabular-nums'] },
+});
+
 export default function ProfileScreen() {
   const [mainTab, setMainTab] = useState<MainTab>('mine');
   const [session, setSession] = useState<Session | null>(null);
@@ -98,6 +148,12 @@ export default function ProfileScreen() {
   const [activityOverview, setActivityOverview] = useState<LearningOverview | null>(null);
   const [activityFeed, setActivityFeed] = useState<ActivityFeedItem[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
+  const [feedKindTab, setFeedKindTab] = useState<FeedKindTab>('article');
+
+  const filteredActivityFeed = useMemo(
+    () => activityFeed.filter((item) => item.kind === feedKindTab),
+    [activityFeed, feedKindTab]
+  );
 
   const missingConfig = !hasSupabaseConfig();
   const userEmail = session?.user?.email ?? '';
@@ -143,7 +199,10 @@ export default function ProfileScreen() {
     const c = await loadPersistedConnectionSettings();
     setPersesKeyDraft(c.persesApiKey);
     setPersesUrlDraft(c.persesApiUrl);
-    setPersesModelDraft(c.persesDashScopeModel ?? '');
+    const url = c.persesApiUrl ?? '';
+    if (isDashScopeOpenAICompatibleUrl(url)) setPersesModelDraft(c.persesDashScopeModel ?? '');
+    else if (isDeepSeekOpenAICompatibleUrl(url)) setPersesModelDraft(c.persesDeepSeekModel ?? '');
+    else setPersesModelDraft('');
     setConnLoaded(true);
   }, []);
 
@@ -279,7 +338,8 @@ export default function ProfileScreen() {
         ...cur,
         persesApiKey: persesKeyDraft.trim(),
         persesApiUrl: url,
-        persesDashScopeModel: persesModelDraft.trim(),
+        persesDashScopeModel: isDashScopeOpenAICompatibleUrl(url) ? persesModelDraft.trim() : '',
+        persesDeepSeekModel: isDeepSeekOpenAICompatibleUrl(url) ? persesModelDraft.trim() : '',
       });
       Alert.alert('已保存', 'Perses 接入配置已写入本机，可在 Perses 页发起对话。');
     } catch (err: any) {
@@ -300,7 +360,12 @@ export default function ProfileScreen() {
     setModelModalOpen(false);
     try {
       const cur = await loadPersistedConnectionSettings();
-      await savePersistedConnectionSettings({ ...cur, persesDashScopeModel: t });
+      const u = persesUrlDraft.trim();
+      await savePersistedConnectionSettings({
+        ...cur,
+        ...(isDashScopeOpenAICompatibleUrl(u) ? { persesDashScopeModel: t } : {}),
+        ...(isDeepSeekOpenAICompatibleUrl(u) ? { persesDeepSeekModel: t } : {}),
+      });
     } catch (err: any) {
       Alert.alert('保存失败', err?.message ?? '请稍后重试');
     }
@@ -312,7 +377,12 @@ export default function ProfileScreen() {
     setModelModalOpen(false);
     try {
       const cur = await loadPersistedConnectionSettings();
-      await savePersistedConnectionSettings({ ...cur, persesDashScopeModel: '' });
+      const u = persesUrlDraft.trim();
+      await savePersistedConnectionSettings({
+        ...cur,
+        ...(isDashScopeOpenAICompatibleUrl(u) ? { persesDashScopeModel: '' } : {}),
+        ...(isDeepSeekOpenAICompatibleUrl(u) ? { persesDeepSeekModel: '' } : {}),
+      });
     } catch (err: any) {
       Alert.alert('保存失败', err?.message ?? '请稍后重试');
     }
@@ -333,7 +403,10 @@ export default function ProfileScreen() {
     router.push('/quick-cards');
   }
 
-  const showDashModelPicker = isDashScopeOpenAICompatibleUrl(persesUrlDraft.trim());
+  const persesUrlTrim = persesUrlDraft.trim();
+  const showDashModelPicker = isDashScopeOpenAICompatibleUrl(persesUrlTrim);
+  const showDeepSeekModelPicker = isDeepSeekOpenAICompatibleUrl(persesUrlTrim);
+  const openAiCompatModelKind = showDashModelPicker ? ('dash' as const) : showDeepSeekModelPicker ? ('deepseek' as const) : null;
 
   return (
     <View style={styles.screen}>
@@ -373,58 +446,86 @@ export default function ProfileScreen() {
                 <Text style={styles.activityLoadingText}>加载中…</Text>
               </View>
             ) : activityOverview ? (
-              <View style={styles.heroShell}>
-                <View style={styles.heroCard}>
-                  <Text style={styles.heroEyebrow}>复习随机池 · 合计</Text>
-                  <Text style={styles.heroValue}>{activityOverview.reviewPoolTotal}</Text>
-                  <Text style={styles.heroCaption}>加入复习的划线 + Quick Card</Text>
-                  <View style={styles.heroDivider} />
-                  <View style={styles.heroGridRow}>
-                    <View style={styles.heroCell}>
-                      <Text style={styles.heroCellVal}>{activityOverview.articles}</Text>
-                      <Text style={styles.heroCellLbl}>文章</Text>
-                    </View>
-                    <View style={[styles.heroCell, styles.heroCellSep]}>
-                      <Text style={styles.heroCellVal}>{activityOverview.highlights}</Text>
-                      <Text style={styles.heroCellLbl}>划线</Text>
-                    </View>
-                  </View>
-                  <View style={[styles.heroGridRow, styles.heroGridRowSecond]}>
-                    <View style={styles.heroCell}>
-                      <Text style={styles.heroCellVal}>{activityOverview.quickCards}</Text>
-                      <Text style={styles.heroCellLbl}>Quick Card</Text>
-                    </View>
-                    <View style={[styles.heroCell, styles.heroCellSep]}>
-                      <Text style={styles.heroCellVal}>{activityOverview.highlightsInReview}</Text>
-                      <Text style={styles.heroCellLbl}>加入复习</Text>
-                    </View>
-                  </View>
+              <View style={statsPlainStyles.card}>
+                <View style={statsPlainStyles.heroRow}>
+                  <Text style={statsPlainStyles.heroLabel}>复习随机池 · 可抽取条目</Text>
+                  <Text style={statsPlainStyles.heroValue}>{activityOverview.reviewPoolTotal}</Text>
                 </View>
-                <View style={styles.weekStrip}>
-                  <View style={styles.weekChip}>
-                    <Text style={styles.weekChipVal}>{activityOverview.last7d.newHighlights}</Text>
-                    <Text style={styles.weekChipLbl}>7日新划线</Text>
-                  </View>
-                  <View style={styles.weekChip}>
-                    <Text style={styles.weekChipVal}>{activityOverview.last7d.articlesTouched}</Text>
-                    <Text style={styles.weekChipLbl}>7日文章更新</Text>
-                  </View>
-                  <View style={styles.weekChip}>
-                    <Text style={styles.weekChipVal}>{activityOverview.last7d.quickCardsTouched}</Text>
-                    <Text style={styles.weekChipLbl}>7日卡片变动</Text>
-                  </View>
-                </View>
+                <Text style={statsPlainStyles.footnote}>组成：加入复习的划线 + 全部 Quick Card</Text>
+
+                <View style={statsPlainStyles.divider} />
+
+                <Text style={statsPlainStyles.sectionTitle}>本地总量</Text>
+                <StatsMetricRow label="文章" value={activityOverview.articles} />
+                <StatsMetricRow label="划线" value={activityOverview.highlights} />
+                <StatsMetricRow label="Quick Card" value={activityOverview.quickCards} />
+                <StatsMetricRow label="划线 · 已加入复习" value={activityOverview.highlightsInReview} />
+
+                <View style={statsPlainStyles.divider} />
+
+                <Text style={statsPlainStyles.sectionTitle}>近 7 日</Text>
+                <StatsMetricRow label="新划线" value={activityOverview.last7d.newHighlights} />
+                <StatsMetricRow label="文章有更新" value={activityOverview.last7d.articlesTouched} />
+                <StatsMetricRow label="Quick Card 变动" value={activityOverview.last7d.quickCardsTouched} />
               </View>
             ) : (
               <Text style={styles.feedEmpty}>暂时无法读取本地学习数据。</Text>
             )}
 
             <Text style={[styles.activitySectionTitle, styles.activitySectionTitleSpaced]}>最近动态</Text>
-            <Text style={styles.activityHint}>按更新时间排序；点按进入阅读或 Quick Card 管理。</Text>
+            <Text style={styles.activityHint}>按分类查看；各类内按更新时间排序，点按进入阅读或 Quick Card 管理。</Text>
+            {activityFeed.length > 0 ? (
+              <View style={styles.feedSegmentOuter}>
+                <Pressable
+                  onPress={() => setFeedKindTab('article')}
+                  style={[styles.feedSegmentCell, feedKindTab === 'article' && styles.feedSegmentCellActive]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: feedKindTab === 'article' }}
+                >
+                  <Text
+                    style={[styles.feedSegmentLabel, feedKindTab === 'article' && styles.feedSegmentLabelActive]}
+                    numberOfLines={1}
+                  >
+                    文章
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setFeedKindTab('highlight')}
+                  style={[styles.feedSegmentCell, feedKindTab === 'highlight' && styles.feedSegmentCellActive]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: feedKindTab === 'highlight' }}
+                >
+                  <Text
+                    style={[styles.feedSegmentLabel, feedKindTab === 'highlight' && styles.feedSegmentLabelActive]}
+                    numberOfLines={1}
+                  >
+                    划线
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setFeedKindTab('quick_card')}
+                  style={[styles.feedSegmentCell, feedKindTab === 'quick_card' && styles.feedSegmentCellActive]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: feedKindTab === 'quick_card' }}
+                >
+                  <Text
+                    style={[styles.feedSegmentLabel, feedKindTab === 'quick_card' && styles.feedSegmentLabelActive]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.85}
+                  >
+                    Quick Card
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
             {!activityFeed.length && !activityLoading ? (
               <Text style={styles.feedEmpty}>暂无记录。导入文章、划线或添加 Quick Card 后会出现在这里。</Text>
             ) : null}
-            {activityFeed.map((item) => {
+            {activityFeed.length > 0 && !filteredActivityFeed.length && !activityLoading ? (
+              <Text style={styles.feedEmpty}>当前分类下暂无最近动态。</Text>
+            ) : null}
+            {filteredActivityFeed.map((item) => {
               const iconName =
                 item.kind === 'article'
                   ? ('document-text-outline' as const)
@@ -574,9 +675,11 @@ export default function ProfileScreen() {
                 style={styles.serviceInput}
                 editable={connLoaded}
               />
-              {showDashModelPicker ? (
+              {openAiCompatModelKind ? (
                 <>
-                  <Text style={[styles.serviceFieldLabel, styles.serviceFieldLabelSpaced]}>对话模型（百炼兼容）</Text>
+                  <Text style={[styles.serviceFieldLabel, styles.serviceFieldLabelSpaced]}>
+                    对话模型（{openAiCompatModelKind === 'dash' ? '百炼兼容' : 'DeepSeek'}）
+                  </Text>
                   <Pressable
                     onPress={() => {
                       setModelCustomDraft('');
@@ -588,7 +691,11 @@ export default function ProfileScreen() {
                     accessibilityLabel="选择对话模型"
                   >
                     <View style={styles.modelPickerTextCol}>
-                      <Text style={styles.modelPickerValue}>{getDashScopeCompatibleModel(persesModelDraft)}</Text>
+                      <Text style={styles.modelPickerValue}>
+                        {openAiCompatModelKind === 'dash'
+                          ? getDashScopeCompatibleModel(persesModelDraft)
+                          : getDeepSeekCompatibleModel(persesModelDraft)}
+                      </Text>
                       <Text style={styles.modelPickerHint}>点按选择预设或自定义模型 ID</Text>
                     </View>
                     <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
@@ -600,6 +707,9 @@ export default function ProfileScreen() {
                 {'\n'}
                 若使用阿里云百炼「OpenAI 兼容」Base（…/compatible-mode/v1），填写 Base URL 后会出现「对话模型」入口；未单独设置时优先
                 EXPO_PUBLIC_PERSES_DASHSCOPE_MODEL，否则为 qwen-turbo。
+                {'\n'}
+                若使用 DeepSeek，接入地址填官方 Base（https://api.deepseek.com）或完整 POST（…/chat/completions）；未设置模型时优先
+                EXPO_PUBLIC_PERSES_DEEPSEEK_MODEL，否则为 deepseek-chat。详见 api-docs.deepseek.com。
               </Text>
               <Pressable
                 onPress={() => void savePersesSettings()}
@@ -618,13 +728,24 @@ export default function ProfileScreen() {
           <Pressable style={styles.modelModalBackdrop} onPress={() => setModelModalOpen(false)} accessibilityLabel="关闭" />
           <View style={styles.modelModalCard}>
             <Text style={styles.modelModalTitle}>选择对话模型</Text>
-            <Text style={styles.modelModalSub}>用于百炼 OpenAI 兼容接口的 model 参数，选择后即写入本机。</Text>
+            <Text style={styles.modelModalSub}>
+              {openAiCompatModelKind === 'dash'
+                ? '用于百炼 OpenAI 兼容接口的 model 参数，选择后即写入本机。'
+                : openAiCompatModelKind === 'deepseek'
+                  ? '用于 DeepSeek OpenAI 兼容接口的 model 参数，选择后即写入本机。'
+                  : ''}
+            </Text>
             <ScrollView
               style={styles.modelModalScroll}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
-              {DASHSCOPE_CHAT_MODEL_PRESETS.map((m) => (
+              {(openAiCompatModelKind === 'dash'
+                ? DASHSCOPE_CHAT_MODEL_PRESETS
+                : openAiCompatModelKind === 'deepseek'
+                  ? DEEPSEEK_CHAT_MODEL_PRESETS
+                  : []
+              ).map((m) => (
                 <Pressable
                   key={m.id}
                   onPress={() => void applyPersesModelChoice(m.id)}
@@ -636,13 +757,25 @@ export default function ProfileScreen() {
               ))}
               <Pressable onPress={() => void clearPersesModelChoice()} style={styles.modelModalRowMuted}>
                 <Text style={styles.modelModalRowTitle}>使用默认</Text>
-                <Text style={styles.modelModalRowSub}>清除本机模型名；将使用环境变量或 qwen-turbo</Text>
+                <Text style={styles.modelModalRowSub}>
+                  {openAiCompatModelKind === 'dash'
+                    ? '清除本机模型名；将使用环境变量或 qwen-turbo'
+                    : openAiCompatModelKind === 'deepseek'
+                      ? '清除本机模型名；将使用环境变量或 deepseek-chat'
+                      : ''}
+                </Text>
               </Pressable>
               <Text style={[styles.serviceFieldLabel, styles.serviceFieldLabelSpaced]}>自定义模型 ID</Text>
               <TextInput
                 value={modelCustomDraft}
                 onChangeText={setModelCustomDraft}
-                placeholder="例如 qwen-vl-plus"
+                placeholder={
+                  openAiCompatModelKind === 'dash'
+                    ? '例如 qwen-vl-plus'
+                    : openAiCompatModelKind === 'deepseek'
+                      ? '例如 deepseek-v4-pro'
+                      : '模型 ID'
+                }
                 placeholderTextColor="#9ca3af"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -695,6 +828,28 @@ const styles = StyleSheet.create({
   activitySectionTitle: { fontSize: 15, fontWeight: '800', color: '#111827', marginTop: 4 },
   activitySectionTitleSpaced: { marginTop: 22 },
   activityHint: { marginTop: 6, fontSize: 12, color: '#9ca3af', lineHeight: 18 },
+  feedSegmentOuter: {
+    flexDirection: 'row',
+    marginTop: 12,
+    padding: 3,
+    borderRadius: 10,
+    backgroundColor: '#eceef2',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e7eb',
+    gap: 3,
+  },
+  feedSegmentCell: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 38,
+  },
+  feedSegmentCellActive: { backgroundColor: '#111827' },
+  feedSegmentLabel: { fontSize: 13, fontWeight: '700', color: '#374151', textAlign: 'center' },
+  feedSegmentLabelActive: { color: '#fff' },
   activityLoadingWrap: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -703,61 +858,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   activityLoadingText: { fontSize: 14, color: '#6b7280' },
-  heroShell: { marginTop: 8, gap: 12 },
-  heroCard: {
-    borderRadius: 18,
-    padding: 18,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#e8eaee',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.06,
-        shadowRadius: 12,
-      },
-      android: { elevation: 2 },
-    }),
-  },
-  heroEyebrow: { fontSize: 12, fontWeight: '700', color: '#6b7280', letterSpacing: 0.2 },
-  heroValue: {
-    marginTop: 6,
-    fontSize: 40,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -1,
-  },
-  heroCaption: { marginTop: 4, fontSize: 13, color: '#9ca3af', lineHeight: 18 },
-  heroDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: '#e5e7eb',
-    marginTop: 16,
-    marginBottom: 4,
-  },
-  heroGridRow: { flexDirection: 'row', marginTop: 12 },
-  heroGridRowSecond: { marginTop: 0, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#eef0f3' },
-  heroCell: { flex: 1, alignItems: 'center', paddingVertical: 4 },
-  heroCellSep: {
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: '#eef0f3',
-  },
-  heroCellVal: { fontSize: 20, fontWeight: '800', color: '#1f2937' },
-  heroCellLbl: { marginTop: 4, fontSize: 12, fontWeight: '600', color: '#6b7280' },
-  weekStrip: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  weekChip: {
-    flexGrow: 1,
-    minWidth: 96,
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    alignItems: 'center',
-  },
-  weekChipVal: { fontSize: 18, fontWeight: '800', color: '#111827' },
-  weekChipLbl: { marginTop: 4, fontSize: 10, fontWeight: '700', color: '#6b7280', textAlign: 'center' },
   feedEmpty: {
     marginTop: 12,
     fontSize: 14,

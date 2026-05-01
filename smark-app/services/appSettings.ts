@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const STORAGE_KEY_PERSES_API_URL = 'smark_perses_api_url';
 const STORAGE_KEY_PERSES_API_KEY = 'smark_perses_api_key';
 const STORAGE_KEY_PERSES_DASHSCOPE_MODEL = 'smark_perses_dashscope_model';
+const STORAGE_KEY_PERSES_DEEPSEEK_MODEL = 'smark_perses_deepseek_model';
 const STORAGE_KEY_SUPABASE_URL = 'smark_settings_supabase_url';
 const STORAGE_KEY_SUPABASE_ANON = 'smark_settings_supabase_anon_key';
 
@@ -17,6 +18,8 @@ export type PersistedConnectionSettings = {
   persesApiKey: string;
   /** 百炼 OpenAI 兼容模式下的 `model` 字段；空则走 EXPO_PUBLIC_PERSES_DASHSCOPE_MODEL / qwen-turbo */
   persesDashScopeModel: string;
+  /** DeepSeek（api.deepseek.com）OpenAI 兼容下的 model；空则走 EXPO_PUBLIC_PERSES_DEEPSEEK_MODEL / deepseek-chat */
+  persesDeepSeekModel: string;
 };
 
 /** 构建时内置的 Perses 网关地址；与用户填入的 Key 组成 Bearer 直连 */
@@ -25,12 +28,13 @@ export function getExpoPersesHttpUrl(): string {
 }
 
 export async function loadPersistedConnectionSettings(): Promise<PersistedConnectionSettings> {
-  const [url, anon, persesUrl, persesKey, persesModel] = await Promise.all([
+  const [url, anon, persesUrl, persesKey, persesModel, persesDeepSeek] = await Promise.all([
     AsyncStorage.getItem(STORAGE_KEY_SUPABASE_URL),
     AsyncStorage.getItem(STORAGE_KEY_SUPABASE_ANON),
     AsyncStorage.getItem(STORAGE_KEY_PERSES_API_URL),
     AsyncStorage.getItem(STORAGE_KEY_PERSES_API_KEY),
     AsyncStorage.getItem(STORAGE_KEY_PERSES_DASHSCOPE_MODEL),
+    AsyncStorage.getItem(STORAGE_KEY_PERSES_DEEPSEEK_MODEL),
   ]);
   return {
     supabaseUrl: (url ?? '').trim(),
@@ -38,6 +42,7 @@ export async function loadPersistedConnectionSettings(): Promise<PersistedConnec
     persesApiUrl: (persesUrl ?? '').trim(),
     persesApiKey: (persesKey ?? '').trim(),
     persesDashScopeModel: (persesModel ?? '').trim(),
+    persesDeepSeekModel: (persesDeepSeek ?? '').trim(),
   };
 }
 
@@ -58,6 +63,9 @@ export async function savePersistedConnectionSettings(p: PersistedConnectionSett
     p.persesDashScopeModel?.trim()
       ? AsyncStorage.setItem(STORAGE_KEY_PERSES_DASHSCOPE_MODEL, p.persesDashScopeModel.trim())
       : AsyncStorage.removeItem(STORAGE_KEY_PERSES_DASHSCOPE_MODEL),
+    p.persesDeepSeekModel?.trim()
+      ? AsyncStorage.setItem(STORAGE_KEY_PERSES_DEEPSEEK_MODEL, p.persesDeepSeekModel.trim())
+      : AsyncStorage.removeItem(STORAGE_KEY_PERSES_DEEPSEEK_MODEL),
   ];
   await Promise.all(w);
 }

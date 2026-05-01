@@ -114,3 +114,43 @@ export function getDashScopeCompatibleModel(persisted?: string | null): string {
   if (env) return env;
   return 'qwen-turbo';
 }
+
+/** DeepSeek OpenAI 兼容 Base（见 https://api-docs.deepseek.com/zh-cn/ ）；不含 Anthropic 路径 */
+export function isDeepSeekOpenAICompatibleUrl(url: string): boolean {
+  const u = url.trim();
+  if (!u) return false;
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`);
+    if (parsed.hostname.toLowerCase() !== 'api.deepseek.com') return false;
+    return !parsed.pathname.toLowerCase().startsWith('/anthropic');
+  } catch {
+    return /api\.deepseek\.com/i.test(u);
+  }
+}
+
+/**
+ * 官方对话端点为 POST https://api.deepseek.com/chat/completions（与 OpenAI 的 /v1/ 前缀不同）。
+ * 若只填 Base（https://api.deepseek.com 或 …/v1），自动补全，避免根路径 404。
+ */
+export function resolveDeepSeekChatCompletionsUrl(url: string): string {
+  const t = url.trim().replace(/\/+$/, '');
+  if (!isDeepSeekOpenAICompatibleUrl(t)) return url.trim();
+  if (/\/chat\/completions$/i.test(t)) return t;
+  if (/\/v1$/i.test(t)) return `${t}/chat/completions`;
+  return `${t}/chat/completions`;
+}
+
+export const DEEPSEEK_CHAT_MODEL_PRESETS: ReadonlyArray<{ id: string; title: string; subtitle: string }> = [
+  { id: 'deepseek-chat', title: 'deepseek-chat', subtitle: '经典对话（文档注明将弃用名，仍映射 v4-flash）' },
+  { id: 'deepseek-v4-flash', title: 'deepseek-v4-flash', subtitle: 'v4 轻量' },
+  { id: 'deepseek-v4-pro', title: 'deepseek-v4-pro', subtitle: 'v4 能力更强' },
+  { id: 'deepseek-reasoner', title: 'deepseek-reasoner', subtitle: '推理向（文档注明将弃用名）' },
+];
+
+export function getDeepSeekCompatibleModel(persisted?: string | null): string {
+  const p = (persisted ?? '').trim();
+  if (p) return p;
+  const env = (process.env.EXPO_PUBLIC_PERSES_DEEPSEEK_MODEL ?? '').trim();
+  if (env) return env;
+  return 'deepseek-chat';
+}

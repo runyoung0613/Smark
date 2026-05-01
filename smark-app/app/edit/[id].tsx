@@ -12,6 +12,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { tabHeaderRowVerticalLayout, tabHeaderTapTargetSize } from '../../components/TabScreenChrome';
@@ -24,6 +25,10 @@ import {
 
 export default function EditArticleScreen() {
   const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
+  /** 正文编辑区固定可视高度，过长内容在框内滚动 */
+  const bodyEditorHeight = Math.round(Math.min(340, Math.max(220, winH * 0.36)));
+
   const { id } = useLocalSearchParams<{ id: string }>();
   const articleId = String(id ?? '');
 
@@ -175,10 +180,11 @@ export default function EditArticleScreen() {
           value={draft}
           onChangeText={setDraft}
           multiline
+          scrollEnabled
           editable={!loading}
           placeholder="正文内容，正文内容，正文内容"
           placeholderTextColor="#9ca3af"
-          style={styles.fieldInputBody}
+          style={[styles.fieldInputBody, { height: bodyEditorHeight }]}
           textAlignVertical="top"
         />
 
@@ -260,7 +266,6 @@ const styles = StyleSheet.create({
   },
   fieldInputBody: {
     marginTop: 8,
-    minHeight: 280,
     borderWidth: 1,
     borderColor: '#e5e7eb',
     borderRadius: 10,
@@ -269,6 +274,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     color: '#111827',
+    overflow: 'hidden',
   },
   deleteLinkWrap: { marginTop: 32, alignItems: 'center' },
   deleteLink: { fontSize: 16, color: '#ef4444', fontWeight: '600' },

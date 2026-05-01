@@ -16,6 +16,7 @@ import {
   View,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   createHighlight,
   deleteHighlight,
@@ -35,9 +36,14 @@ import {
 
 const FONT_PX: Record<FontSizePreset, number> = { sm: 15, md: 17, lg: 19 };
 
-/** 顶栏为叠在 WebView 上时，正文需预留的顶部内边距（与注入 JS 一致） */
-const READER_BODY_PAD_TOP_EXPANDED = 52;
-const READER_BODY_PAD_TOP_COLLAPSED = 12;
+/** 阅读页无顶叠层时正文顶部留白（仅避开进度条与边距） */
+const READER_BODY_PAD_TOP_WEB = 12;
+/** 底栏展开时正文底部留白（底栏内边距 + 按钮行近似高度，不含安全区；注入时再加 insets.bottom） */
+const READER_BODY_PAD_BOTTOM_EXPANDED = 54;
+/** 底栏收起时正文底部留白（仍保留少量边距 + 安全区） */
+const READER_BODY_PAD_BOTTOM_COLLAPSED = 14;
+/** 初次 HTML 内联 padding 的默认底值，避免首帧贴底；`onLoadEnd` 会再注入精确值 */
+const READER_BODY_PAD_BOTTOM_HTML_FALLBACK = 72;
 const SELECTION_DEBOUNCE_MS = 480;
 const RN_TOOLBAR_H = 48;
 
@@ -148,7 +154,7 @@ function buildHtml(
     html, body { margin: 0; background: var(--bg); }
     body {
       font-family: -apple-system, Roboto, "Segoe UI", Arial, sans-serif;
-      padding: ${READER_BODY_PAD_TOP_EXPANDED}px 16px 18px 16px;
+      padding: ${READER_BODY_PAD_TOP_WEB}px 16px ${READER_BODY_PAD_BOTTOM_HTML_FALLBACK}px 16px;
       font-size: var(--fs);
       line-height: 1.85;
       color: var(--fg);
@@ -425,6 +431,10 @@ function injectBodyPaddingTop(px: number) {
   return `(function(){try{document.body.style.paddingTop=${px}+'px';}catch(e){}})();true;`;
 }
 
+function injectBodyPaddingBottom(px: number) {
+  return `(function(){try{document.body.style.paddingBottom=${px}+'px';}catch(e){}})();true;`;
+}
+
 /** 选区/划线块为视口坐标；工具条叠在 WebView 容器内，需避开上下边界 */
 function clampToolbarTop(viewportTop: number, viewportH: number, stageHeight: number) {
   const barH = RN_TOOLBAR_H;
@@ -495,6 +505,8 @@ export default function ReadScreen() {
   const [noteDraft, setNoteDraft] = useState('');
   const [noteTarget, setNoteTarget] = useState<{ highlightId: string; quote: string } | null>(null);
 
+  const insets = useSafeAreaInsets();
+
   const clearSelectionChrome = useCallback(() => {
     setSelectionPayload(null);
     setSelectionRect(null);
@@ -515,9 +527,11 @@ export default function ReadScreen() {
 
   useEffect(() => {
     if (loading) return;
-    const px = topBarVisible ? READER_BODY_PAD_TOP_EXPANDED : READER_BODY_PAD_TOP_COLLAPSED;
-    webRef.current?.injectJavaScript(injectBodyPaddingTop(px));
-  }, [topBarVisible, loading]);
+    const bottomBase = topBarVisible ? READER_BODY_PAD_BOTTOM_EXPANDED : READER_BODY_PAD_BOTTOM_COLLAPSED;
+    const bottomPx = bottomBase + insets.bottom;
+    webRef.current?.injectJavaScript(injectBodyPaddingTop(READER_BODY_PAD_TOP_WEB));
+    webRef.current?.injectJavaScript(injectBodyPaddingBottom(bottomPx));
+  }, [topBarVisible, loading, insets.bottom]);
 
   async function persistPrefs(next: { readerTheme?: ReaderTheme; fontSizePreset?: FontSizePreset }) {
     const theme = next.readerTheme ?? readerTheme;
@@ -635,8 +649,10 @@ export default function ReadScreen() {
       webRef.current?.injectJavaScript(
         injectSetReaderStyle({ bg: t.bg, fg: t.fg, hl: t.hl, fs: `${fs}px` })
       );
-      const pad = topBarVisible ? READER_BODY_PAD_TOP_EXPANDED : READER_BODY_PAD_TOP_COLLAPSED;
-      webRef.current?.injectJavaScript(injectBodyPaddingTop(pad));
+      const bottomBase = topBarVisible ? READER_BODY_PAD_BOTTOM_EXPANDED : READER_BODY_PAD_BOTTOM_COLLAPSED;
+      const bottomPx = bottomBase + insets.bottom;
+      webRef.current?.injectJavaScript(injectBodyPaddingTop(READER_BODY_PAD_TOP_WEB));
+      webRef.current?.injectJavaScript(injectBodyPaddingBottom(bottomPx));
       if (jumpHighlightId) {
         setTimeout(() => scrollToHighlightInWeb(jumpHighlightId), 100);
       }
@@ -648,6 +664,7 @@ export default function ReadScreen() {
     readerTheme,
     fontSizePreset,
     topBarVisible,
+    insets.bottom,
   ]);
 
   // When returning from highlights/edit pages, read/[id] stays mounted,
@@ -846,7 +863,28 @@ export default function ReadScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: themeUi.barBg }]}>
-      <Stack.Screen options={{ title }} />
+      <Stack.Screen
+        options={{
+          title,
+          headerRight: () => (
+            <Pressable
+              onPress={() => {
+                router.push({ pathname: '/edit/[id]', params: { id: articleId } });
+              }}
+              disabled={loading}
+              style={({ pressed }) => [
+                styles.headerEditBtn,
+                loading && styles.headerEditBtnDisabled,
+                pressed && !loading && styles.headerEditBtnPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="编辑正文"
+            >
+              <Text style={styles.headerEditBtnText}>编辑</Text>
+            </Pressable>
+          ),
+        }}
+      />
 
       <View style={styles.stage} onLayout={(e) => setStageLayout(e.nativeEvent.layout)}>
         <WebView
@@ -878,12 +916,16 @@ export default function ReadScreen() {
         <View
           pointerEvents={topBarVisible ? 'box-none' : 'none'}
           style={[
-            styles.topBarOverlay,
-            { backgroundColor: themeUi.barBg, borderBottomColor: themeUi.barBorder },
-            !topBarVisible && styles.topBarOverlayHidden,
+            styles.bottomBarOverlay,
+            {
+              backgroundColor: themeUi.barBg,
+              borderTopColor: themeUi.barBorder,
+              paddingBottom: 8 + insets.bottom,
+            },
+            !topBarVisible && styles.bottomBarOverlayHidden,
           ]}
         >
-          <View style={styles.topBarRow}>
+          <View style={styles.bottomBarRow}>
             <Pressable
               onPress={() => cycleTheme()}
               style={[styles.secondaryBtn, { borderColor: themeUi.barBorder }]}
@@ -895,7 +937,7 @@ export default function ReadScreen() {
             </Pressable>
             <Pressable
               onPress={() => cycleFont()}
-              style={[styles.secondaryBtn, styles.topBarBtnSpacing, { borderColor: themeUi.barBorder }]}
+              style={[styles.secondaryBtn, styles.bottomBarBtnSpacing, { borderColor: themeUi.barBorder }]}
               disabled={loading || !prefsLoaded}
             >
               <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>
@@ -906,19 +948,10 @@ export default function ReadScreen() {
               onPress={() => {
                 router.push({ pathname: '/highlights/[id]', params: { id: articleId } });
               }}
-              style={[styles.secondaryBtn, styles.topBarBtnSpacing, { borderColor: themeUi.barBorder }]}
+              style={[styles.secondaryBtn, styles.bottomBarBtnSpacing, { borderColor: themeUi.barBorder }]}
               disabled={loading}
             >
               <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>列表</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                router.push({ pathname: '/edit/[id]', params: { id: articleId } });
-              }}
-              style={[styles.secondaryBtn, styles.topBarBtnSpacing, { borderColor: themeUi.barBorder }]}
-              disabled={loading}
-            >
-              <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>矫正</Text>
             </Pressable>
           </View>
         </View>
@@ -1129,6 +1162,16 @@ export default function ReadScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  headerEditBtn: {
+    backgroundColor: '#111827',
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    marginRight: 4,
+  },
+  headerEditBtnDisabled: { opacity: 0.45 },
+  headerEditBtnPressed: { opacity: 0.88 },
+  headerEditBtnText: { color: '#fff', fontWeight: '800', fontSize: 15 },
   stage: { flex: 1, position: 'relative' },
   webFill: { ...StyleSheet.absoluteFillObject },
   progressOverlay: {
@@ -1140,32 +1183,40 @@ const styles = StyleSheet.create({
     zIndex: 30,
   },
   progressFill: { height: 2 },
-  topBarOverlay: {
+  bottomBarOverlay: {
     position: 'absolute',
-    top: 2,
+    bottom: 0,
     left: 0,
     right: 0,
     zIndex: 29,
     paddingHorizontal: 8,
     paddingTop: 8,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
+    borderTopWidth: 1,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
+      },
+      android: { elevation: 6 },
+    }),
   },
-  topBarOverlayHidden: {
+  bottomBarOverlayHidden: {
     opacity: 0,
     height: 0,
     paddingTop: 0,
     paddingBottom: 0,
-    borderBottomWidth: 0,
+    borderTopWidth: 0,
     overflow: 'hidden',
   },
-  topBarRow: {
+  bottomBarRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: 6,
   },
-  topBarBtnSpacing: { marginRight: 8 },
+  bottomBarBtnSpacing: { marginRight: 8 },
   secondaryBtn: {
     borderWidth: 1,
     paddingHorizontal: 10,

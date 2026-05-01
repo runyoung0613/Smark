@@ -393,6 +393,24 @@ export async function updateHighlightNote(input: { id: string; note: string }) {
   }
 }
 
+/** 仅更新 `quote` 展示字段（复习池、划线列表等）；阅读原文高亮仍按正文 `start`/`end` 定位。 */
+export async function updateHighlightQuote(input: { id: string; quote: string }) {
+  await initDb();
+  const db = await getDb();
+  const ts = nowIso();
+  await db.runAsync(`UPDATE highlights SET quote = ?, updated_at = ? WHERE id = ?`, [input.quote, ts, input.id]);
+  const row = await db.getFirstAsync<DbHighlight>(`SELECT * FROM highlights WHERE id = ?`, [input.id]);
+  if (row) {
+    await enqueueOutbox({
+      table: 'highlights',
+      op: 'upsert',
+      recordId: row.id,
+      payload: normalizeHighlightRow(row),
+      ts,
+    });
+  }
+}
+
 export async function deleteHighlight(id: string) {
   await initDb();
   const db = await getDb();
