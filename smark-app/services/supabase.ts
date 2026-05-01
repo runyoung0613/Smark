@@ -5,7 +5,7 @@ import { loadPersistedConnectionSettings } from './appSettings';
 const envSupabaseUrl = (process.env.EXPO_PUBLIC_SUPABASE_URL ?? '').trim();
 const envSupabaseAnonKey = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '').trim();
 
-/** 本机「我的」中保存的覆盖项（启动时由 hydrateSupabaseFromStorage 填入） */
+/** 本机 AsyncStorage 中的 Supabase 覆盖项（旧版或调试用途；正式发布通常仅用 env） */
 let storedSupabaseUrl = '';
 let storedSupabaseAnonKey = '';
 
@@ -37,7 +37,7 @@ export function getSupabase(): SupabaseClient {
   const supabaseUrl = effectiveSupabaseUrl();
   const supabaseAnonKey = effectiveSupabaseAnonKey();
   if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error('Missing Supabase config: 请在「我的」或 .env 中配置 URL 与 anon key');
+    throw new Error('Missing Supabase config: 请在构建配置（EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_ANON_KEY）中设置，或使用预配置的安装包');
   }
   if (!isSupabaseProjectUrl(supabaseUrl)) {
     throw new Error(

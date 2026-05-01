@@ -1,7 +1,7 @@
 # Smark（阅记）— 开发进度与实现细节
 
 > **用途**：给协作者与 AI 助手看的「当前代码与进度真值」。产品愿景与路线图见仓库根目录 [`README.md`](README.md)。  
-> **最后同步代码状态**：2026-04-30（以仓库 `smark-app/` 为准）
+> **最后同步代码状态**：2026-05-01（以仓库 `smark-app/` 为准）
 
 **协作者 / AI 助手**：每次开工或提交前应先阅读本节与下方「已实现功能」真值；完成功能或行为变更后，**必须同步更新 `claude.md`**（必要时再更新 `README.md`），避免文档与代码漂移。
 
@@ -32,8 +32,8 @@
 
 ### 0.2 编辑模块
 
-- **仅用于对正文人工矫正**（乱码、错字、格式等）：独立页 **`/edit/[id]`**（入口：阅读顶栏 **「矫正」**），保存时更新 `articles.content`。
-- **保存编辑时**：若正文相对**上一次已保存版本**有变化 → **先提示用户**；确认后执行 **软删除本篇全部划线**（`highlights` 中该 `article_id` 且未删记录统一写入 `deleted_at`），再写入新正文。避免 `start/end` 与改后正文错位。
+- **仅用于对正文人工矫正**（乱码、错字、格式等）：独立页 **`/edit/[id]`**（入口：阅读顶栏 **「矫正」**），可编辑 **标题与正文**，保存时更新 `articles`。
+- **保存编辑时**：若正文相对**上一次已保存版本**有变化 → **先提示用户**；确认后执行 **软删除本篇全部划线**（`highlights` 中该 `article_id` 且未删记录统一写入 `deleted_at`），再写入新标题与正文。若仅标题变化而正文未变，则不清划线。避免 `start/end` 与改后正文错位。
 
 ### 0.3 划线列表
 
@@ -64,7 +64,7 @@
 | 阶段 | 目标 | 状态 |
 |------|------|------|
 | **M1** | 本地闭环：导入 → 阅读 → 划线 → 划线列表 → 划线复习 + Quick Card（合并随机池） | **已对齐 §0 主路径**：`in_review`、回原文定位、展示板与合并随机池、**矫正正文**页与清划线；阅读页 **RN 选区/划线工具条** + 顶栏叠层布局 + Android 空 `menuItems` 补丁；**待增强**：写想法、搜索接入、动效；可选：减少 WebView 整页重载闪动 |
-| **M2** | Supabase 邮箱 OTP 登录；Profile 登录/退出 | **未开始**（`profile.tsx` 仅占位文案） |
+| **M2** | Supabase 邮箱 OTP 登录；Profile 登录/退出 | **部分落地**：`profile.tsx` 已含 OTP、退出、立即同步与本机服务配置；完整 DoD 仍以 §8.2 为准 |
 | **M3** | 增量同步、软删除、LWW 冲突 | **未开始** |
 
 ---
@@ -73,17 +73,18 @@
 
 ### 2.1 根与数据
 
-- [`smark-app/app/_layout.tsx`](smark-app/app/_layout.tsx)：启动时 `initDb()`，Stack 注册 tabs / import / read / **edit** / highlights。
-- [`smark-app/services/db.ts`](smark-app/services/db.ts)：SQLite `smark.db`；表 `articles`、`highlights`、`quick_cards`；软删除字段 `deleted_at`；文章/划线/Quick Card 的 CRUD 与列表查询。
+- [`smark-app/app/_layout.tsx`](smark-app/app/_layout.tsx)：启动时 `initDb()`，根包裹 **`SafeAreaProvider`**（供 Tab 页内 `TabScreenHeader` 使用 `useSafeAreaInsets`），Stack 注册 tabs / import / read / **edit** / highlights / **quick-cards** / **review-search** / perses-memory。
+- [`smark-app/app/(tabs)/_layout.tsx`](smark-app/app/(tabs)/_layout.tsx)：`Tabs` **`headerShown: false`**；底栏图标：**未选中**为 **`Feather` 细线**（`home` / `book-open` / `star` / `user`），**选中**为 **`Ionicons` 实心**（`home` / `book` / `sparkles` / `person`），避免 Ionicons outline 笔画偏粗；**`tabBarActiveTintColor`** `#2563eb`、未选中 `#6b7280`、标签 **`fontWeight: '500'`**、顶部分割线。顶栏由各 Tab 页内 [`TabScreenHeader`](smark-app/components/TabScreenChrome.tsx) 自建（大标题 + 右侧主按钮 / 自定义左侧 + 分隔线），与首页 mockup 一致。
+- [`smark-app/services/db.ts`](smark-app/services/db.ts)：SQLite `smark.db`；表 `articles`、`highlights`、`quick_cards`；软删除字段 `deleted_at`；文章/划线/Quick Card 的 CRUD 与列表查询；**学习动态**用 **`getLearningOverview`**（总量 + 近 7 日粗指标）、**`getLearningActivityFeed`**（按 `updated_at` 混排最近条）。
 - **未建表**：独立 `cards` 表未落地。`listReviewHighlights()` 仅 `in_review=1`；Quick Card 与划线条目合并参与复习 Tab 的随机池展示。
 
 ### 2.2 `/(tabs)/index` — 文章列表
 
-- [`smark-app/app/(tabs)/index.tsx`](smark-app/app/(tabs)/index.tsx)：拉取未删除文章，点击进入 `/read/[id]`；入口跳转 `/import`。
+- [`smark-app/app/(tabs)/index.tsx`](smark-app/app/(tabs)/index.tsx)：页内顶栏 **「文章」** + 黑底 **「导入」** + 分隔线（顶栏随 **安全区** 下移，避免压住状态栏）；列表为圆角卡片：**标题单行**、**摘要两行**（超出省略）；底栏左侧 **更新时间**（与图示一致的 `en-US` 12h 含秒）、右侧蓝色 **「编辑」**（进 `/edit/[id]` 矫正正文）；点击标题区进 `/read/[id]`；**向左滑**（`renderRightActions`）露出**右侧**红色 **「删除」**，确认后软删除。
 
 ### 2.3 `/import` — 导入文章
 
-- [`smark-app/app/import.tsx`](smark-app/app/import.tsx)：标题 + 正文粘贴，`createArticle` 写入 SQLite。
+- [`smark-app/app/import.tsx`](smark-app/app/import.tsx)：全屏页（Stack **`headerShown: false`**）；顶栏 **安全区**（外层 `headerWrap`，与 [`TabScreenHeader`](smark-app/components/TabScreenChrome.tsx) 一致避免覆盖内容行 `paddingTop`）+ 返回（`Ionicons`）+ **分段器**（链接导入 / 粘贴导入）+ 分隔线；内容行复用 **`tabHeaderRowVerticalLayout`** 与 **横向 16**；返回与右侧占位宽度为 **`tabHeaderTapTargetSize`（40）**，与 `HeaderSearchIconButton` 行高一致，避免 44px 触控框撑高整行导致分隔线与 Tab 页不齐；分段器略收紧垂直内边距以不高于该行。**链接导入**：初始仅链接框（占位「粘贴文章链接」）与黑底 **「从链接抓取并填充」**（[`importUrlFetch`](smark-app/services/importUrlFetch.ts)）；**抓取成功后才出现** 标题、正文与 **「保存」**（保存后仍进入阅读）。**粘贴导入**：无链接区与抓取按钮，直接进入标题 + 正文 + **「保存」**；两种模式共用同一套标题/正文草稿；从粘贴切回链接时若已有标题或正文则展开编辑区，避免草稿被隐藏。
 
 ### 2.4 `/read/[id]` — 阅读 + 划线
 
@@ -105,23 +106,25 @@
 
 ### 2.6 `/edit/[id]` — 矫正正文
 
-- [`smark-app/app/edit/[id].tsx`](smark-app/app/edit/[id].tsx)：多行编辑正文；保存且正文相对载入时有变化 → 提示 → 软删除本篇全部划线 → `updateArticleContent`。
+- [`smark-app/app/edit/[id].tsx`](smark-app/app/edit/[id].tsx)：与 Quick Card 编辑相同范式——自建顶栏 **← · 居中「编辑」· 黑底「保存」**、分隔线；**标题** + **正文** 分区与占位文案；底部居中红色 **删除此文章**（`softDeleteArticle`）。保存：标题或正文任一有改动时可保存；仅**正文**相对载入变化 → 提示 → 软删除本篇全部划线 → `updateArticle`；仅改标题则直接 `updateArticle`。`Stack` **`headerShown: false`**。
 
 ### 2.7 `/(tabs)/review` — 复习 Tab
 
-- [`smark-app/app/(tabs)/review.tsx`](smark-app/app/(tabs)/review.tsx)：**合并随机池**（`listReviewHighlights` + `listQuickCards`）；单按钮「换一条」抽取；抽到划线显示来源并提供「回原文定位」，抽到 Quick Card 仅展示文本；支持添加 Quick Card。
+- [`smark-app/app/(tabs)/review.tsx`](smark-app/app/(tabs)/review.tsx)：页内顶栏 **「复习」** + **`HeaderSearchIconButton`**（`Ionicons` 放大镜 + 浅灰圆形容器，`router.push('/review-search')`）+ **⋯** → `/quick-cards`。**添加到Quick Card** 卡片：输入 + 主按钮「加入复习池」（写入 `quick_cards`）。**随机复习池**卡片：标题行右侧 **「共 n 条」** 胶囊；**展示舞台** 左侧色条（划线蓝 / Quick Card 紫）+ 浅底圆角区 + 轻阴影；**类型徽章**（`Ionicons` +「划线摘录」/「Quick Card」）；划线 **来自「文章名」**、Quick Card **展示板 · 随手一句**；正文 **更大字号与行距**；空态含图标；**换一条** 为 `shuffle` 图标+文案；划线时 **「回原文定位」**；**本页不提供**当前条删除入口。
+- [`smark-app/app/review-search.tsx`](smark-app/app/review-search.tsx)：独立全屏 **`headerShown: false`**；顶栏 **安全区** + **`Ionicons` 返回** + **胶囊搜索框**（浅灰底、占位「输入文本内容进行搜索」、框内右侧放大镜，仅搜 **Quick Card** 正文/备注）；分隔线；下方列表为与复习页一致的 **`tabListCard`** 结果卡片；无关键词时灰色说明文案，无命中时提示「无匹配的 Quick Card」。
+- [`smark-app/app/quick-cards.tsx`](smark-app/app/quick-cards.tsx)：**全部 Quick Card**；顶栏返回 + 居中标题 **QuickCard** + 分隔线；列表项为圆角灰框卡片（正文、可选备注、`updated_at` 时间 + **编辑**，与文章列表同色）；**向左滑**露出**右侧**红色 **「删除」**（`Swipeable` + `renderRightActions`），确认后 `deleteQuickCard`；**编辑** 打开全屏 Modal：顶栏 **`Ionicons` 返回** + 居中粗体 **「编辑」** + 黑底圆角 **「保存」**；**正文** 大输入框（灰边圆角、占位与稿图一致）、**备注（可选）**、底部居中红色 **「删除此卡片」**（`updateQuickCard` / `deleteQuickCard`）；`Stack` **`headerShown: false`** 自建顶栏。入口为复习页顶栏「⋯」或 `router.push('/quick-cards')`。
 
 ### 2.8 `/(tabs)/profile` — 我的
 
-- [`smark-app/app/(tabs)/profile.tsx`](smark-app/app/(tabs)/profile.tsx)：**占位**；文案说明后续 Supabase 登录与同步。
+- [`smark-app/app/(tabs)/profile.tsx`](smark-app/app/(tabs)/profile.tsx)：顶栏 **`TabScreenHeader`** 左侧分段器 **「学习动态」|「个人中心」**（与导入页同款黑底选中；分段器轨道为浅灰小块，**整页白底**），**无**顶栏「导入」。**学习动态**：顶部说明文案；**主卡片** 大号 **复习随机池合计** + 2×2 小格（文章 / 划线 / Quick Card / 加入复习）；**近 7 日** 为三枚并排 **数据芯片**；**最近动态** 为左图标圆底 + 正文 + 右侧 **`chevron-forward`** 的列表（轻阴影圆角卡片）；数据来自 `getLearningOverview` / `getLearningActivityFeed`；进入分段或回到本 Tab 时刷新。**个人中心**：白底卡片 **「账号」**（已登录：邮箱、上次同步、**立即同步** 描边按钮浅灰边框、**退出登录** 黑底实心；未登录：OTP）；**服务与接口** 圆角灰框卡片：**Perses API Key**（`SK-`、`secureTextEntry`）+ **Perses 接入地址（可选，https）** + **保存服务配置**；说明文案含 **阿里云百炼 OpenAI 兼容 Base** 用法（见 §2.9）。直连时 **本机接入地址优先于** `EXPO_PUBLIC_PERSES_HTTP_URL`，请求头 `Authorization: Bearer <Key>`；仅地址无 Key 仍兼容旧版无密钥 POST。Supabase **不在此填写**，由构建时 `EXPO_PUBLIC_SUPABASE_*` 注入。**不含**阅读偏好编辑（阅读主题与字号仅在阅读页顶栏调整）。未配置直连时可登录后用 Edge `perses_proxy`。
 
 ### 2.9 Perses（对话 + 人设文件）
 
 - **内置默认文案**：`docs/perses/memory/SOUL.md`、`USER.md`、`MEMORY.md` 与 [`docs/perses/PERSES_RUNTIME_SYSTEM.zh.md`](docs/perses/PERSES_RUNTIME_SYSTEM.zh.md) 为真源；经脚本生成与 App 集成的副本为 [`smark-app/services/persesBundled.ts`](smark-app/services/persesBundled.ts)（勿手改该生成文件，改 docs 后重新生成）。
 - **生成命令**（仓库根目录）：`node scripts/embed-perses-bundled.js`
 - **本地持久化**：[`smark-app/services/persesMemory.ts`](smark-app/services/persesMemory.ts) 用 AsyncStorage 存用户编辑后的三文件内容；未保存覆盖时使用 `persesBundled` 默认。
-- **UI**：[`smark-app/app/(tabs)/perses.tsx`](smark-app/app/(tabs)/perses.tsx) 对话；[`smark-app/app/perses-memory.tsx`](smark-app/app/perses-memory.tsx) 编辑 SOUL / USER / MEMORY；路由在 [`smark-app/app/_layout.tsx`](smark-app/app/_layout.tsx) 注册为 `perses-memory`。
-- **请求体**：发送对话时附带 `prompt`、`soulMd`、`userMd`、`memoryMd`、`runtimeSystemZh`（由 `buildPersesRequestPayload` 组装）。直连自定义 API 与 Supabase [`perses_proxy`](supabase/functions/perses_proxy/index.ts) 均支持；Edge 端将五段拼成一条 `prompt` 再转发上游 `PERSES_UPSTREAM_URL`（仍为 JSON `{ prompt }`）。
+- **UI**：[`smark-app/app/(tabs)/perses.tsx`](smark-app/app/(tabs)/perses.tsx) 页内顶栏 **「Perses」** + **⋯**（`/perses-memory`）；会话列表区 **浅灰底**（`#fafafa`），**用户气泡**为 **品牌蓝底白字**（`#2563eb`），**Perses 气泡**为 **白底灰描边** + 轻阴影，与用户对齐左右区分；助手气泡内 **「编辑」** 打开 **全屏遮罩 + 竖直居中** 弹窗（`paddingBottom: keyboardHeight` 将可视区压在键盘上方，避免贴顶）；弹窗大圆角白卡、标题 + 说明、正文 **`TextInput` 浅蓝描边**（`#93c5fd`），高度在 **100–240** 间随 `onContentSizeChange` 伸缩，顶满后框内滚动；底栏 **取消**（描边）/ **加入 Quick Card**（黑底）；底部输入条白底圆角描边 + **`Ionicons` 上箭头** 发送；**无**输入区顶部分割线，与 Tab 栏之间仅小内边距（不与 `safeAreaInsets.bottom` 重复叠加）。
+- **请求体**：默认由 `buildPersesRequestPayload` 组装 `prompt`、`soulMd`、`userMd`、`memoryMd`、`runtimeSystemZh`；**自定义网关**与 Supabase [`perses_proxy`](supabase/functions/perses_proxy/index.ts) 走该 JSON（Edge 将五段拼成一条 `prompt` 再 POST 上游 `PERSES_UPSTREAM_URL`）。若接入地址为 **阿里云百炼 OpenAI 兼容模式**（URL 含 `dashscope*.aliyuncs.com` 与 `compatible-mode`），App 自动 POST `…/v1/chat/completions`，请求体为 **`{ model, messages }`**（人设与本轮合并为一条 `user` 内容，与 Edge 拼装规则一致），默认模型 **`qwen-turbo`**，可用环境变量 **`EXPO_PUBLIC_PERSES_DASHSCOPE_MODEL`** 覆盖；解析 `choices[0].message.content`。
 
 ---
 
@@ -142,7 +145,7 @@
 - **WebView 整页重载**：新划线后仍会更新 `source` 导致整页重载；当前用 **滚动恢复** 缓解回顶；若要「零闪」需 M1+ 方案（例如 `injectJavaScript` 在 DOM 内包 span、延迟 `setHighlights` 等），尚未实现。
 - **Android 文本选择**：依赖上游 WebView + 本仓库补丁；大版本升级 `react-native-webview` 后需复查补丁是否仍适用或已合并上游。
 - **平台**：规划为 Android 为主；`ToastAndroid` 等部分反馈未做 iOS 等价实现。
-- **组件库**：README 规划中曾列出的 `components/`、`hooks/`、`summary/` 等**当前仓库不存在**；以本节文件列表为准。
+- **组件库**：README 规划中曾列出的 `hooks/`、`summary/` 等**当前仓库不存在**；Tab 顶栏与列表卡片样式见 [`smark-app/components/TabScreenChrome.tsx`](smark-app/components/TabScreenChrome.tsx)。
 
 ---
 
@@ -201,7 +204,7 @@
 ### 8.2 中期（M2，2~4 周）
 
 **目标**
-- 完成账号基础能力（Supabase OTP），让 Profile 不再是占位页。
+- 完成账号基础能力（Supabase OTP），补齐 §8.2 DoD（含重启后登录态恢复等）。
 
 **核心任务**
 - 引入 Supabase 客户端配置与环境变量约定（仅 `.env.example` 入库）。

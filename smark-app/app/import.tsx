@@ -1,4 +1,4 @@
-import { useHeaderHeight } from '@react-navigation/elements';
+import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -16,21 +16,27 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { tabHeaderRowVerticalLayout, tabHeaderTapTargetSize } from '../components/TabScreenChrome';
 import { createArticle } from '../services/db';
+import { fetchArticleFromUrl } from '../services/importUrlFetch';
 
 const ANDROID_IME_EXTRA = 20;
 
 const BODY_MIN_H = 168;
 const BODY_PAD_V = 20;
 
+type ImportMode = 'link' | 'paste';
+
 export default function ImportScreen() {
-  const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
   const maxBodyH = useMemo(() => Math.round(Math.min(winH * 0.48, 420)), [winH]);
 
   const scrollRef = useRef<ScrollView>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const [mode, setMode] = useState<ImportMode>('link');
+  /** 链接导入：仅在「从链接抓取并填充」成功后才显示标题、正文与保存。 */
+  const [linkFieldsVisible, setLinkFieldsVisible] = useState(false);
   const [url, setUrl] = useState('');
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -69,68 +75,16 @@ export default function ImportScreen() {
     };
   }, []);
 
+  function goBack() {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(tabs)');
+  }
+
   function normalizeUrl(raw: string) {
     const u = raw.trim();
     if (!u) return '';
     if (/^https?:\/\//i.test(u)) return u;
     return `https://${u}`;
-  }
-
-  function decodeHtmlEntities(input: string) {
-    return input
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/&amp;/gi, '&')
-      .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>')
-      .replace(/&quot;/gi, '"')
-      .replace(/&#39;/gi, "'")
-      .replace(/&#(\d+);/g, (all, n) => {
-        const code = Number(n);
-        if (!Number.isFinite(code)) return all;
-        try {
-          return String.fromCodePoint(code);
-        } catch {
-          return all;
-        }
-      });
-  }
-
-  function extractTitle(html: string) {
-    const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    if (!m) return '';
-    const t = m[1] ?? '';
-    return decodeHtmlEntities(
-      t
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-    );
-  }
-
-  function htmlToPlainText(html: string) {
-    let h = html;
-    h = h.replace(/<!--([\s\S]*?)-->/g, ' ');
-    h = h.replace(/<script[\s\S]*?<\/script>/gi, ' ');
-    h = h.replace(/<style[\s\S]*?<\/style>/gi, ' ');
-    h = h.replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ');
-
-    const article = h.match(/<article[^>]*>([\s\S]*?)<\/article>/i)?.[1];
-    if (article) h = article;
-    else {
-      const body = h.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1];
-      if (body) h = body;
-    }
-
-    h = h.replace(/<(br|br\/)\s*>/gi, '\n');
-    h = h.replace(/<\/(p|div|section|article|header|footer|main|aside|li|h[1-6]|blockquote|pre|tr)>/gi, '\n');
-    h = h.replace(/<(p|div|section|article|header|footer|main|aside|li|h[1-6]|blockquote|pre|tr)[^>]*>/gi, '\n');
-    h = h.replace(/<[^>]+>/g, ' ');
-
-    h = decodeHtmlEntities(h);
-    h = h.replace(/\r/g, '');
-    h = h.replace(/[ \t]+\n/g, '\n');
-    h = h.replace(/\n{3,}/g, '\n\n');
-    return h.trim();
   }
 
   async function onFetchFromUrl() {
@@ -145,39 +99,32 @@ export default function ImportScreen() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      const res = await fetch(normalized, {
-        method: 'GET',
-        headers: {
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
+      const { title: nextTitle, content: nextContent, finalUrl } = await fetchArticleFromUrl(normalized, {
         signal: controller.signal,
+        timeoutMs: 20000,
       });
 
-      if (!res.ok) {
-        Alert.alert('抓取失败', `HTTP ${res.status}`);
-        return;
-      }
-
-      const html = await res.text();
-      const nextTitle = extractTitle(html);
-      const nextContent = htmlToPlainText(html);
-
       if (!nextContent) {
-        Alert.alert('抓取失败', '未解析到可用正文（可能是图片/脚本渲染页面）。');
+        Alert.alert(
+          '抓取失败',
+          '未解析到可用正文。常见原因：站点拦截 App 内请求、需登录、或正文由脚本动态生成。\n可改用系统浏览器打开该页，复制全文后粘贴到下方正文框。'
+        );
         return;
       }
 
       if (!title.trim() && nextTitle) setTitle(nextTitle);
       setContent(nextContent);
+      if (finalUrl && finalUrl !== normalized) {
+        setUrl(finalUrl);
+      }
+      setLinkFieldsVisible(true);
 
       requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
-    } catch (e: any) {
-      const msg = e?.name === 'AbortError' ? '请求超时或已取消' : '请检查网络，或该站点不允许直接抓取';
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e ?? '未知错误');
       Alert.alert('抓取失败', msg);
     } finally {
-      clearTimeout(timeout);
       setFetching(false);
     }
   }
@@ -198,6 +145,19 @@ export default function ImportScreen() {
     keyboardInset +
     (Platform.OS === 'android' && keyboardInset > 0 ? ANDROID_IME_EXTRA : 0);
 
+  const showEditorAndSave = mode === 'paste' || (mode === 'link' && linkFieldsVisible);
+
+  function onSelectMode(next: ImportMode) {
+    if (next === 'paste') {
+      setMode('paste');
+      return;
+    }
+    setMode('link');
+    if (title.trim() || content.trim()) {
+      setLinkFieldsVisible(true);
+    }
+  }
+
   async function onSave() {
     const t = title.trim();
     const c = content.trim();
@@ -206,14 +166,14 @@ export default function ImportScreen() {
       return;
     }
     if (!c) {
-      Alert.alert('提示', '请粘贴正文内容');
+      Alert.alert('提示', '请填写正文内容');
       return;
     }
     setSaving(true);
     try {
       const id = await createArticle({ title: t, content: c });
       router.replace({ pathname: '/read/[id]', params: { id } });
-    } catch (e) {
+    } catch {
       Alert.alert('保存失败', '请稍后重试');
     } finally {
       setSaving(false);
@@ -221,87 +181,180 @@ export default function ImportScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.kav}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={headerHeight}
-    >
-      <ScrollView
-        ref={scrollRef}
-        style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: scrollPadBottom }]}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        showsVerticalScrollIndicator
-        nestedScrollEnabled
-      >
-        <Text style={styles.label}>链接导入</Text>
-        <TextInput
-          value={url}
-          onChangeText={setUrl}
-          placeholder="粘贴文章链接（https://…）"
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="url"
-          style={styles.input}
-        />
-        <Pressable
-          onPress={onFetchFromUrl}
-          disabled={fetching}
-          style={[styles.btnSecondary, fetching && styles.btnDisabled]}
-        >
-          {fetching ? (
-            <View style={styles.btnRow}>
-              <ActivityIndicator color="#111827" />
-              <Text style={styles.btnSecondaryText}>抓取中…</Text>
-            </View>
-          ) : (
-            <Text style={styles.btnSecondaryText}>从链接抓取并填充</Text>
-          )}
-        </Pressable>
-
-        <Text style={styles.label}>标题</Text>
-        <TextInput
-          value={title}
-          onChangeText={setTitle}
-          placeholder="例如：认知心理学读书笔记"
-          style={styles.input}
-        />
-
-        <Text style={[styles.label, { marginTop: 16 }]}>正文（粘贴）</Text>
-        <View style={[styles.bodyFrame, { height: bodyH }]}>
-          <TextInput
-            value={content}
-            onChangeText={setContent}
-            placeholder="把文章内容粘贴到这里…"
-            style={styles.bodyInput}
-            multiline
-            textAlignVertical="top"
-            scrollEnabled={bodyScrollInner}
-            onContentSizeChange={(e) => onBodyContentSizeChange(e.nativeEvent.contentSize.height)}
-          />
+    <View style={styles.screen}>
+      <View style={[styles.headerWrap, { paddingTop: insets.top }]}>
+        <View style={styles.topBar}>
+          <Pressable onPress={goBack} style={styles.backBtn} hitSlop={12} accessibilityRole="button" accessibilityLabel="返回">
+            <Ionicons name="chevron-back" size={26} color="#111827" style={styles.backIcon} />
+          </Pressable>
+          <View style={styles.segmentOuter}>
+            <Pressable
+              onPress={() => onSelectMode('link')}
+              style={[styles.segmentCell, mode === 'link' && styles.segmentCellActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: mode === 'link' }}
+            >
+              <Text style={[styles.segmentLabel, mode === 'link' && styles.segmentLabelActive]} numberOfLines={1}>
+                链接导入
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => onSelectMode('paste')}
+              style={[styles.segmentCell, mode === 'paste' && styles.segmentCellActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: mode === 'paste' }}
+            >
+              <Text style={[styles.segmentLabel, mode === 'paste' && styles.segmentLabelActive]} numberOfLines={1}>
+                粘贴导入
+              </Text>
+            </Pressable>
+          </View>
+          <View style={styles.backSpacer} />
         </View>
+        <View style={styles.headerDivider} />
+      </View>
 
-        <Pressable onPress={onSave} disabled={saving} style={[styles.btn, saving && styles.btnDisabled]}>
-          <Text style={styles.btnText}>{saving ? '保存中…' : '保存并阅读'}</Text>
-        </Pressable>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      <KeyboardAvoidingView
+        style={styles.kav}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={0}
+      >
+        <ScrollView
+          ref={scrollRef}
+          style={styles.scroll}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: scrollPadBottom }]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator
+          nestedScrollEnabled
+        >
+          {mode === 'link' ? (
+            <>
+              <TextInput
+                value={url}
+                onChangeText={setUrl}
+                placeholder="粘贴文章链接"
+                placeholderTextColor="#9ca3af"
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                style={styles.input}
+              />
+              <Pressable onPress={onFetchFromUrl} disabled={fetching} style={[styles.btnFetch, fetching && styles.btnDisabled]}>
+                {fetching ? (
+                  <View style={styles.btnRow}>
+                    <ActivityIndicator color="#fff" />
+                    <Text style={styles.btnText}>抓取中…</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.btnText}>从链接抓取并填充</Text>
+                )}
+              </Pressable>
+            </>
+          ) : null}
+
+          {showEditorAndSave ? (
+            <>
+              <Text style={[styles.label, mode === 'link' ? styles.labelAfterLink : null]}>标题</Text>
+              <TextInput
+                value={title}
+                onChangeText={setTitle}
+                placeholder="例如：认知心理学"
+                placeholderTextColor="#9ca3af"
+                style={styles.input}
+              />
+
+              <Text style={[styles.label, { marginTop: 16 }]}>正文</Text>
+              <View style={[styles.bodyFrame, { height: bodyH }]}>
+                <TextInput
+                  value={content}
+                  onChangeText={setContent}
+                  placeholder="正文内容"
+                  placeholderTextColor="#9ca3af"
+                  style={styles.bodyInput}
+                  multiline
+                  textAlignVertical="top"
+                  scrollEnabled={bodyScrollInner}
+                  onContentSizeChange={(e) => onBodyContentSizeChange(e.nativeEvent.contentSize.height)}
+                />
+              </View>
+
+              <Pressable onPress={onSave} disabled={saving} style={[styles.btn, saving && styles.btnDisabled]}>
+                <Text style={styles.btnText}>{saving ? '保存中…' : '保存'}</Text>
+              </Pressable>
+            </>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  kav: { flex: 1, backgroundColor: '#fff' },
+  screen: { flex: 1, backgroundColor: '#fff' },
+  headerWrap: { backgroundColor: '#fff' },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: tabHeaderRowVerticalLayout.paddingTop,
+    paddingBottom: tabHeaderRowVerticalLayout.paddingBottom,
+    minHeight: tabHeaderRowVerticalLayout.minHeight,
+  },
+  backBtn: {
+    width: tabHeaderTapTargetSize,
+    height: tabHeaderTapTargetSize,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  backIcon: { marginLeft: -2 },
+  backSpacer: { width: tabHeaderTapTargetSize },
+  segmentOuter: {
+    flex: 1,
+    flexDirection: 'row',
+    padding: 2,
+    borderRadius: 10,
+    backgroundColor: '#f3f4f6',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e7eb',
+  },
+  segmentCell: {
+    flex: 1,
+    paddingVertical: 6,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmentCellActive: {
+    backgroundColor: '#111827',
+  },
+  segmentLabel: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '700',
+    color: '#111827',
+  },
+  segmentLabelActive: {
+    color: '#fff',
+  },
+  headerDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#e5e7eb',
+    marginHorizontal: 16,
+  },
+  kav: { flex: 1 },
   scroll: { flex: 1 },
   scrollContent: { padding: 16, flexGrow: 1 },
   label: { fontSize: 14, fontWeight: '700', color: '#111827' },
+  labelAfterLink: { marginTop: 20 },
   input: {
     borderWidth: 1,
     borderColor: '#e5e7eb',
     borderRadius: 12,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 12,
     marginTop: 8,
+    fontSize: 15,
     color: '#111827',
   },
   bodyFrame: {
@@ -315,10 +368,17 @@ const styles = StyleSheet.create({
   bodyInput: {
     flex: 1,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 12,
     fontSize: 15,
     lineHeight: 22,
     color: '#111827',
+  },
+  btnFetch: {
+    marginTop: 12,
+    backgroundColor: '#111827',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
   },
   btn: {
     marginTop: 16,
@@ -327,17 +387,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
   },
-  btnSecondary: {
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    backgroundColor: '#fff',
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
   btnDisabled: { opacity: 0.6 },
-  btnText: { color: '#fff', fontWeight: '800' },
-  btnSecondaryText: { color: '#111827', fontWeight: '800' },
+  btnText: { color: '#fff', fontWeight: '800', fontSize: 15 },
   btnRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
 });

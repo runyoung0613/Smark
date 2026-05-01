@@ -218,15 +218,16 @@ export async function getArticle(id: string): Promise<DbArticle | null> {
   return row ?? null;
 }
 
-export async function updateArticleContent(input: { id: string; content: string }) {
+/** 更新文章标题与正文（矫正页保存）。 */
+export async function updateArticle(input: { id: string; title: string; content: string }) {
   await initDb();
   const db = await getDb();
   const ts = nowIso();
-  await db.runAsync(`UPDATE articles SET content = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, [
-    input.content,
-    ts,
-    input.id,
-  ]);
+  const title = input.title.trim();
+  await db.runAsync(
+    `UPDATE articles SET title = ?, content = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+    [title, input.content, ts, input.id]
+  );
   const row = await db.getFirstAsync<DbArticle>(
     `SELECT * FROM articles WHERE id = ? AND deleted_at IS NULL`,
     [input.id]
@@ -440,6 +441,185 @@ export async function listQuickCards(): Promise<DbQuickCard[]> {
     `SELECT * FROM quick_cards WHERE deleted_at IS NULL ORDER BY updated_at DESC`
   );
   return rows;
+}
+
+/** 学习动态：总量与近 7 日粗指标（本地库，不含已软删）。 */
+export type LearningOverview = {
+  articles: number;
+  highlights: number;
+  highlightsInReview: number;
+  quickCards: number;
+  reviewPoolTotal: number;
+  last7d: {
+    articlesTouched: number;
+    newHighlights: number;
+    quickCardsTouched: number;
+  };
+};
+
+function rolling7dIso() {
+  return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+}
+
+export async function getLearningOverview(): Promise<LearningOverview> {
+  await initDb();
+  const db = await getDb();
+  const since = rolling7dIso();
+
+  const articles = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM articles WHERE deleted_at IS NULL`
+  );
+  const highlights = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM highlights WHERE deleted_at IS NULL`
+  );
+  const highlightsInReview = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM highlights WHERE deleted_at IS NULL AND in_review = 1`
+  );
+  const quickCards = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM quick_cards WHERE deleted_at IS NULL`
+  );
+
+  const last7dArticles = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM articles WHERE deleted_at IS NULL AND updated_at >= ?`,
+    [since]
+  );
+  const last7dHighlights = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM highlights WHERE deleted_at IS NULL AND created_at >= ?`,
+    [since]
+  );
+  const last7dQuicks = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM quick_cards WHERE deleted_at IS NULL AND updated_at >= ?`,
+    [since]
+  );
+
+  const hir = highlightsInReview?.n ?? 0;
+  const qc = quickCards?.n ?? 0;
+
+  return {
+    articles: articles?.n ?? 0,
+    highlights: highlights?.n ?? 0,
+    highlightsInReview: hir,
+    quickCards: qc,
+    reviewPoolTotal: hir + qc,
+    last7d: {
+      articlesTouched: last7dArticles?.n ?? 0,
+      newHighlights: last7dHighlights?.n ?? 0,
+      quickCardsTouched: last7dQuicks?.n ?? 0,
+    },
+  };
+}
+
+export type ActivityFeedItem =
+  | { kind: 'article'; id: string; title: string; time: string }
+  | {
+      kind: 'highlight';
+      id: string;
+      articleId: string;
+      quote: string;
+      articleTitle: string;
+      time: string;
+    }
+  | { kind: 'quick_card'; id: string; front: string; time: string };
+
+/** 学习动态：按更新时间混排最近若干条（文章 / 划线 / Quick Card）。 */
+export async function getLearningActivityFeed(limit = 14): Promise<ActivityFeedItem[]> {
+  await initDb();
+  const db = await getDb();
+  const per = Math.min(24, Math.max(limit, 8));
+
+  const arts = await db.getAllAsync<{ id: string; title: string; updated_at: string }>(
+    `SELECT id, title, updated_at FROM articles WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?`,
+    [per]
+  );
+
+  const hls = await db.getAllAsync<{
+    id: string;
+    article_id: string;
+    quote: string;
+    updated_at: string;
+    article_title: string;
+  }>(
+    `SELECT h.id, h.article_id, h.quote, h.updated_at, a.title AS article_title
+     FROM highlights h
+     INNER JOIN articles a ON a.id = h.article_id AND a.deleted_at IS NULL
+     WHERE h.deleted_at IS NULL
+     ORDER BY h.updated_at DESC
+     LIMIT ?`,
+    [per]
+  );
+
+  const cards = await db.getAllAsync<{ id: string; front: string; updated_at: string }>(
+    `SELECT id, front, updated_at FROM quick_cards WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?`,
+    [per]
+  );
+
+  type Merged = { t: number; item: ActivityFeedItem };
+  const merged: Merged[] = [];
+  for (const r of arts) {
+    const t = Date.parse(r.updated_at);
+    merged.push({
+      t: Number.isNaN(t) ? 0 : t,
+      item: { kind: 'article', id: r.id, title: r.title, time: r.updated_at },
+    });
+  }
+  for (const r of hls) {
+    const t = Date.parse(r.updated_at);
+    merged.push({
+      t: Number.isNaN(t) ? 0 : t,
+      item: {
+        kind: 'highlight',
+        id: r.id,
+        articleId: r.article_id,
+        quote: r.quote,
+        articleTitle: r.article_title,
+        time: r.updated_at,
+      },
+    });
+  }
+  for (const r of cards) {
+    const t = Date.parse(r.updated_at);
+    merged.push({
+      t: Number.isNaN(t) ? 0 : t,
+      item: { kind: 'quick_card', id: r.id, front: r.front, time: r.updated_at },
+    });
+  }
+  merged.sort((a, b) => b.t - a.t);
+  return merged.slice(0, limit).map((m) => m.item);
+}
+
+export async function updateQuickCard(id: string, input: { front: string; back?: string | null }) {
+  await initDb();
+  const db = await getDb();
+  const ts = nowIso();
+  const front = input.front.trim();
+  if (!front) return false;
+  const back =
+    input.back === undefined ? undefined : input.back === null ? null : input.back.trim() || null;
+
+  const prev = await db.getFirstAsync<DbQuickCard>(
+    `SELECT * FROM quick_cards WHERE id = ? AND deleted_at IS NULL`,
+    [id]
+  );
+  if (!prev) return false;
+
+  const nextBack = back !== undefined ? back : prev.back;
+  await db.runAsync(`UPDATE quick_cards SET front = ?, back = ?, updated_at = ? WHERE id = ?`, [
+    front,
+    nextBack,
+    ts,
+    id,
+  ]);
+  const row = await db.getFirstAsync<DbQuickCard>(`SELECT * FROM quick_cards WHERE id = ?`, [id]);
+  if (row) {
+    await enqueueOutbox({
+      table: 'quick_cards',
+      op: 'upsert',
+      recordId: id,
+      payload: row,
+      ts,
+    });
+  }
+  return true;
 }
 
 export async function deleteQuickCard(id: string) {

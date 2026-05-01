@@ -82,9 +82,7 @@ export default function PersesMemoryScreen() {
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>记忆与人设</Text>
-      <Text style={styles.sub}>
-        对应 Perses 的 SOUL.md、USER.md、MEMORY.md，保存在本机。发送对话时会一并传给接口（或云端 perses_proxy）。
-      </Text>
+      <Text style={styles.sub}>对应 Perses 的 SOUL.md、USER.md、MEMORY.md，保存在本机。</Text>
 
       <View style={styles.actions}>
         <Pressable onPress={onSave} disabled={saving} style={[styles.btn, styles.btnPrimary, saving && styles.btnDisabled]}>

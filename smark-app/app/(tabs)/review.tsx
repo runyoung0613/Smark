@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import {
@@ -12,9 +13,13 @@ import {
   View,
 } from 'react-native';
 import {
+  HeaderOverflowButton,
+  HeaderSearchIconButton,
+  TabScreenHeader,
+  tabListCard,
+} from '../../components/TabScreenChrome';
+import {
   createQuickCard,
-  deleteHighlight,
-  deleteQuickCard,
   listArticles,
   listQuickCards,
   listReviewHighlights,
@@ -50,8 +55,6 @@ export default function ReviewScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      // Android（尤其 edge-to-edge / 第三方输入法）下，用键盘高度给 ScrollView 底部留白，
-      // 避免「换一条」等下方内容被键盘挡住。
       const showSub = Keyboard.addListener(
         Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
         (e) => setKeyboardHeight(e.endCoordinates?.height ?? 0)
@@ -122,33 +125,6 @@ export default function ReviewScreen() {
     });
   }
 
-  function confirmDeleteCurrent(item: ReviewItem) {
-    const isHl = item.kind === 'highlight';
-    Alert.alert(
-      isHl ? '删除划线' : '删除 Quick Card',
-      isHl
-        ? '该句将从文章中移除划线，且不再出现在复习池。'
-        : '该卡片将从展示池移除，不可恢复。',
-      [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '删除',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              if (isHl) {
-                await deleteHighlight(item.highlightId);
-              } else {
-                await deleteQuickCard(item.id);
-              }
-              await refresh();
-            })();
-          },
-        },
-      ]
-    );
-  }
-
   async function addQuick() {
     const text = quickDraft.trim();
     if (!text) {
@@ -161,8 +137,17 @@ export default function ReviewScreen() {
     Alert.alert('已加入', '现在会在随机池中出现。');
   }
 
+  const headerRight = (
+    <>
+      <HeaderSearchIconButton onPress={() => router.push('/review-search')} />
+      <HeaderOverflowButton label="管理 Quick Card" onPress={() => router.push('/quick-cards')} />
+    </>
+  );
+
   return (
     <View style={styles.root}>
+      <TabScreenHeader title="复习" right={headerRight} />
+
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[
@@ -172,55 +157,95 @@ export default function ReviewScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator
       >
-          <Text style={styles.title}>随机复习池</Text>
-          <Text style={styles.sub}>划线复习与 Quick Card 合并随机。</Text>
+        <View style={[tabListCard.card, styles.blockCard]}>
+          <Text style={styles.cardHeading}>添加到Quick Card</Text>
+          <TextInput
+            value={quickDraft}
+            onChangeText={setQuickDraft}
+            placeholder="一个你随手看到的句子"
+            placeholderTextColor="#9ca3af"
+            style={styles.input}
+          />
+          <Pressable onPress={addQuick} style={[styles.btnBlack, styles.btnInCard]}>
+            <Text style={styles.btnBlackText}>加入复习池</Text>
+          </Pressable>
+        </View>
 
-          <View style={styles.quickSection}>
-            <Text style={styles.quickLabel}>添加 Quick Card</Text>
-            <TextInput
-              value={quickDraft}
-              onChangeText={setQuickDraft}
-              placeholder="一个你想随手看到的句子"
-              style={styles.input}
-            />
-            <Pressable onPress={addQuick} style={[styles.btn, styles.quickAddBtn]}>
-              <Text style={styles.btnText}>加入展示池</Text>
-            </Pressable>
+        <View style={[tabListCard.card, styles.blockCard]}>
+          <View style={styles.poolHeaderRow}>
+            <Text style={styles.cardHeading}>随机复习池</Text>
+            {items.length > 0 ? (
+              <View style={styles.poolCountPill}>
+                <Text style={styles.poolCountPillText}>共 {items.length} 条</Text>
+              </View>
+            ) : null}
           </View>
-
-          <View style={styles.card}>
+          <View
+            style={[
+              styles.poolStage,
+              current?.kind === 'highlight' && styles.poolStageAccentHl,
+              current?.kind === 'quick' && styles.poolStageAccentQc,
+            ]}
+          >
             {current ? (
               <>
-                <Text style={styles.source}>
-                  {current.sourceTitle}
-                  {current.kind === 'highlight' ? '（划线）' : ''}
-                </Text>
-                <Text style={styles.text}>{current.text}</Text>
-                <View style={styles.cardActions}>
-                  {current.kind === 'highlight' ? (
-                    <Pressable onPress={() => goReadHighlight(current)} style={styles.linkBtn}>
-                      <Text style={styles.linkBtnText}>回原文定位</Text>
-                    </Pressable>
-                  ) : null}
-                  <Pressable onPress={() => confirmDeleteCurrent(current)} style={styles.deleteBtn}>
-                    <Text style={styles.deleteBtnText}>从复习池删除</Text>
-                  </Pressable>
+                <View style={styles.poolBadgeRow}>
+                  <View
+                    style={[
+                      styles.typeBadge,
+                      current.kind === 'highlight' ? styles.typeBadgeHl : styles.typeBadgeQc,
+                    ]}
+                  >
+                    <Ionicons
+                      name={current.kind === 'highlight' ? 'bookmark' : 'albums-outline'}
+                      size={14}
+                      color={current.kind === 'highlight' ? '#1d4ed8' : '#6d28d9'}
+                    />
+                    <Text
+                      style={current.kind === 'highlight' ? styles.typeBadgeTextHl : styles.typeBadgeTextQc}
+                    >
+                      {current.kind === 'highlight' ? '划线摘录' : 'Quick Card'}
+                    </Text>
+                  </View>
                 </View>
+                {current.kind === 'highlight' ? (
+                  <Text style={styles.poolFromLine} numberOfLines={1}>
+                    来自「{current.sourceTitle}」
+                  </Text>
+                ) : (
+                  <Text style={styles.poolFromLineMuted}>展示板 · 随手一句</Text>
+                )}
+                <Text style={styles.poolBody} selectable>
+                  {current.text}
+                </Text>
               </>
             ) : (
-              <Text style={styles.empty}>
-                暂无可展示内容：请在阅读页划线并在划线列表打开「加入复习」，或添加 Quick Card。
-              </Text>
+              <View style={styles.poolEmptyInner}>
+                <Ionicons name="sparkles-outline" size={36} color="#d1d5db" />
+                <Text style={styles.poolPreviewTextMuted}>
+                  暂无可展示：在阅读页划线并打开「加入复习」，或先在上方添加 Quick Card。
+                </Text>
+              </View>
             )}
           </View>
-
           <Pressable
             onPress={nextRandom}
             disabled={!items.length}
-            style={[styles.btn, !items.length && styles.btnDisabled]}
+            style={[styles.btnBlack, styles.btnInCard, !items.length && styles.btnDisabled]}
           >
-            <Text style={styles.btnText}>换一条</Text>
+            <View style={styles.btnBlackInner}>
+              <Ionicons name="shuffle" size={18} color="#fff" />
+              <Text style={styles.btnBlackText}>换一条</Text>
+            </View>
           </Pressable>
+          {current && current.kind === 'highlight' ? (
+            <View style={styles.secondaryRow}>
+              <Pressable onPress={() => goReadHighlight(current)} style={styles.textLink}>
+                <Text style={styles.textLinkLabel}>回原文定位</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
       </ScrollView>
     </View>
   );
@@ -229,62 +254,103 @@ export default function ReviewScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#fff' },
   scroll: { flex: 1 },
-  scrollContent: { padding: 16, paddingBottom: 12 },
-  title: { fontSize: 22, fontWeight: '800', color: '#111827' },
-  sub: { marginTop: 6, fontSize: 13, color: '#6b7280', lineHeight: 18 },
-  quickSection: {
-    marginTop: 14,
-    paddingBottom: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f3f4f6',
-  },
-  quickAddBtn: { marginTop: 10 },
-  card: {
-    marginTop: 16,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 14,
-    padding: 16,
-    minHeight: 160,
-    justifyContent: 'center',
-  },
-  source: { color: '#6b7280', fontWeight: '700', marginBottom: 10 },
-  text: { fontSize: 17, lineHeight: 26, color: '#111827', fontWeight: '700' },
-  empty: { color: '#6b7280', textAlign: 'center', fontSize: 14 },
-  cardActions: {
-    marginTop: 14,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 10,
-  },
-  linkBtn: { alignSelf: 'flex-start' },
-  linkBtnText: { color: '#2563eb', fontWeight: '800', fontSize: 15 },
-  deleteBtn: {
-    borderWidth: 1,
-    borderColor: '#fecaca',
-    backgroundColor: '#fef2f2',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-  },
-  deleteBtnText: { color: '#b91c1c', fontWeight: '800', fontSize: 14 },
-  btn: {
-    marginTop: 12,
-    backgroundColor: '#111827',
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  btnDisabled: { opacity: 0.45 },
-  btnText: { color: '#fff', fontWeight: '800' },
-  quickLabel: { fontWeight: '800', color: '#111827' },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12 },
+  blockCard: { marginBottom: 12 },
+  cardHeading: { fontSize: 16, fontWeight: '800', color: '#111827' },
   input: {
     marginTop: 10,
     borderWidth: 1,
     borderColor: '#e5e7eb',
     borderRadius: 12,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: '#111827',
   },
+  poolHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  poolCountPill: {
+    backgroundColor: '#f3f4f6',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e7eb',
+  },
+  poolCountPillText: { fontSize: 12, fontWeight: '700', color: '#4b5563' },
+  poolStage: {
+    marginTop: 12,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    backgroundColor: '#fafbfc',
+    borderWidth: 1,
+    borderColor: '#eef0f3',
+    borderLeftWidth: 4,
+    borderLeftColor: '#e5e7eb',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.04,
+        shadowRadius: 8,
+      },
+      android: { elevation: 1 },
+    }),
+  },
+  poolStageAccentHl: {
+    borderLeftColor: '#2563eb',
+    backgroundColor: '#f8fafc',
+  },
+  poolStageAccentQc: {
+    borderLeftColor: '#7c3aed',
+    backgroundColor: '#faf5ff',
+  },
+  poolBadgeRow: { marginBottom: 8 },
+  typeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  typeBadgeHl: { backgroundColor: '#dbeafe' },
+  typeBadgeQc: { backgroundColor: '#ede9fe' },
+  typeBadgeTextHl: { fontSize: 12, fontWeight: '800', color: '#1d4ed8' },
+  typeBadgeTextQc: { fontSize: 12, fontWeight: '800', color: '#6d28d9' },
+  poolFromLine: { fontSize: 13, fontWeight: '600', color: '#6b7280', marginBottom: 12 },
+  poolFromLineMuted: { fontSize: 12, fontWeight: '600', color: '#9ca3af', marginBottom: 12 },
+  poolBody: {
+    fontSize: 17,
+    lineHeight: 28,
+    letterSpacing: 0.15,
+    color: '#111827',
+    fontWeight: '500',
+  },
+  poolEmptyInner: { alignItems: 'center', paddingVertical: 8, gap: 12 },
+  poolPreviewTextMuted: { fontSize: 14, lineHeight: 22, color: '#9ca3af', textAlign: 'center', paddingHorizontal: 4 },
+  btnBlack: {
+    backgroundColor: '#111827',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  btnInCard: { marginTop: 12 },
+  btnBlackInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  btnBlackText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  btnDisabled: { opacity: 0.45 },
+  secondaryRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  textLink: { alignSelf: 'flex-start' },
+  textLinkLabel: { color: '#2563eb', fontWeight: '800', fontSize: 14 },
 });

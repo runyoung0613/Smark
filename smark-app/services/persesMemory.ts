@@ -62,3 +62,55 @@ export async function buildPersesRequestPayload(userPrompt: string) {
     runtimeSystemZh: f.runtimeSystemZh,
   };
 }
+
+export type PersesRequestPayload = Awaited<ReturnType<typeof buildPersesRequestPayload>>;
+
+/** 与 Edge `perses_proxy` 一致：把人设与本轮问题拼成一条用户侧长文本（用于 OpenAI 兼容 messages） */
+export function assemblePersesPromptFromPayload(payload: PersesRequestPayload): string {
+  const sections: string[] = [];
+  if (payload.runtimeSystemZh?.trim()) sections.push(`[运行时规则]\n${payload.runtimeSystemZh.trim()}`);
+  if (payload.soulMd?.trim()) sections.push(`[SOUL.md]\n${payload.soulMd.trim()}`);
+  if (payload.userMd?.trim()) sections.push(`[USER.md]\n${payload.userMd.trim()}`);
+  if (payload.memoryMd?.trim()) sections.push(`[MEMORY.md]\n${payload.memoryMd.trim()}`);
+  sections.push(`[用户本轮]\n${payload.prompt.trim()}`);
+  return sections.join('\n\n---\n\n');
+}
+
+/** 阿里云百炼 OpenAI 兼容 Base（如 …/compatible-mode/v1） */
+export function isDashScopeOpenAICompatibleUrl(url: string): boolean {
+  const u = url.toLowerCase();
+  return u.includes('dashscope') && u.includes('aliyuncs.com') && u.includes('compatible-mode');
+}
+
+/**
+ * 百炼文档里的 Base URL 通常不含具体路由；兼容模式对话须 POST …/v1/chat/completions。
+ * 若用户只填到 `/v1`，自动补全，避免根路径 404。
+ */
+export function resolveDashScopeChatCompletionsUrl(url: string): string {
+  const t = url.trim().replace(/\/+$/, '');
+  if (!isDashScopeOpenAICompatibleUrl(t)) return url.trim();
+  if (/\/chat\/completions$/i.test(t)) return t;
+  if (/\/v1$/i.test(t)) return `${t}/chat/completions`;
+  if (/compatible-mode$/i.test(t)) return `${t}/v1/chat/completions`;
+  return `${t}/chat/completions`;
+}
+
+/** 百炼兼容模式常见模型，供「个人中心」弹窗选择 */
+export const DASHSCOPE_CHAT_MODEL_PRESETS: ReadonlyArray<{ id: string; title: string; subtitle: string }> = [
+  { id: 'qwen-turbo', title: 'qwen-turbo', subtitle: '速度快、成本低' },
+  { id: 'qwen-plus', title: 'qwen-plus', subtitle: '综合能力强' },
+  { id: 'qwen-max', title: 'qwen-max', subtitle: '旗舰' },
+  { id: 'qwen-long', title: 'qwen-long', subtitle: '长文本' },
+  { id: 'qwen-flash', title: 'qwen-flash', subtitle: '轻量快速' },
+];
+
+/**
+ * 解析最终请求的 `model`：本机保存的模型名优先，否则构建变量，否则 qwen-turbo。
+ */
+export function getDashScopeCompatibleModel(persisted?: string | null): string {
+  const p = (persisted ?? '').trim();
+  if (p) return p;
+  const env = (process.env.EXPO_PUBLIC_PERSES_DASHSCOPE_MODEL ?? '').trim();
+  if (env) return env;
+  return 'qwen-turbo';
+}

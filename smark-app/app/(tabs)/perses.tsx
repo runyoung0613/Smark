@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Ionicons } from '@expo/vector-icons';
 import {
   ActivityIndicator,
   Alert,
@@ -11,20 +12,35 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
+import { HeaderOverflowButton, TabScreenHeader } from '../../components/TabScreenChrome';
 import { createQuickCard } from '../../services/db';
-import { loadPersistedConnectionSettings } from '../../services/appSettings';
-import { buildPersesRequestPayload } from '../../services/persesMemory';
+import { loadPersistedConnectionSettings, getExpoPersesHttpUrl } from '../../services/appSettings';
+import {
+  assemblePersesPromptFromPayload,
+  buildPersesRequestPayload,
+  getDashScopeCompatibleModel,
+  isDashScopeOpenAICompatibleUrl,
+  resolveDashScopeChatCompletionsUrl,
+} from '../../services/persesMemory';
 import { getSupabase, hasSupabaseConfig } from '../../services/supabase';
+
+const MODAL_INPUT_MIN_H = 100;
+const MODAL_INPUT_MAX_H = 240;
 
 export default function PersesScreen() {
   const router = useRouter();
+  const { height: winH } = useWindowDimensions();
   const scrollRef = useRef<ScrollView>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const [apiUrl, setApiUrl] = useState('');
+  const [persesDashScopeModel, setPersesDashScopeModel] = useState('');
+  const [persesApiKey, setPersesApiKey] = useState('');
+  /** 旧版本保存在「Perses API URL」中的直连完整地址，兼容读取 */
+  const [legacyPersesUrl, setLegacyPersesUrl] = useState('');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -34,13 +50,14 @@ export default function PersesScreen() {
     {
       id: 'hello',
       role: 'assistant',
-      text: '我是 Perses。你可以提问，我会给出回复；然后你可以编辑我的回复，一键加入 Quick Card。',
+      text: '我是Perses，你可以向我提问，我会给出回复，你可以编辑我的回复，一键加入Quick Card。',
     },
   ]);
 
   const [editOpen, setEditOpen] = useState(false);
   const [editText, setEditText] = useState('');
   const [editSaving, setEditSaving] = useState(false);
+  const [modalInputH, setModalInputH] = useState(MODAL_INPUT_MIN_H);
 
   const canSend = useMemo(() => draft.trim().length > 0 && !sending, [draft, sending]);
 
@@ -51,7 +68,6 @@ export default function PersesScreen() {
   }, []);
 
   const ensureKeyboard = useCallback(() => {
-    // 仅用于让 ScrollView 在键盘弹出后也能滚到可见区域
     requestAnimationFrame(() => {
       setTimeout(scrollToBottom, 50);
       setTimeout(scrollToBottom, 220);
@@ -60,13 +76,19 @@ export default function PersesScreen() {
 
   const openEditForMessage = useCallback((_msgId: string, text: string) => {
     setEditText(text);
+    setModalInputH(MODAL_INPUT_MIN_H);
     setEditOpen(true);
-    ensureKeyboard();
-  }, [ensureKeyboard]);
+  }, []);
 
   const closeEdit = useCallback(() => {
     setEditOpen(false);
     setEditText('');
+    setModalInputH(MODAL_INPUT_MIN_H);
+  }, []);
+
+  const onModalInputContentSizeChange = useCallback((h: number) => {
+    const next = Math.min(MODAL_INPUT_MAX_H, Math.max(MODAL_INPUT_MIN_H, Math.ceil(h)));
+    setModalInputH(next);
   }, []);
 
   const saveQuickCard = useCallback(async () => {
@@ -89,15 +111,29 @@ export default function PersesScreen() {
 
   const callPerses = useCallback(
     async (prompt: string) => {
-      const u = apiUrl.trim();
-      // 优先走 Supabase Edge Function（服务端持 key）
-      if (!u) {
+      const key = persesApiKey.trim();
+      const stored = legacyPersesUrl.trim();
+      const storedHttp = stored.toLowerCase().startsWith('http') ? stored : '';
+      const envUrl = getExpoPersesHttpUrl().trim();
+      /** 本机填入的地址优先于构建变量，便于不改包即可联通 */
+      const endpointForBearer = storedHttp || envUrl;
+
+      const useKeyDirect = key.length > 0 && endpointForBearer.length > 0;
+      const useLegacyNoAuth = key.length === 0 && storedHttp.length > 0;
+
+      if (key.length > 0 && !endpointForBearer) {
+        return (
+          '（已填写 Perses Key，但缺少接入地址。请到「个人中心」填写「Perses 接入地址」（https://…），或在构建中配置 EXPO_PUBLIC_PERSES_HTTP_URL。）'
+        );
+      }
+
+      if (!useKeyDirect && !useLegacyNoAuth) {
         if (!hasSupabaseConfig()) {
           return (
-            '（未配置 Perses 接口）\n' +
+            '（未配置 Perses）\n' +
             '你可以：\n' +
-            '1) 在「我的」中填写 Perses API URL（直连），然后再提问；或\n' +
-            '2) 配置 Supabase 并登录后使用云端 perses_proxy。'
+            '1) 在「个人中心」填写 Perses Key 与接入地址；或\n' +
+            '2) 由开发者在构建中配置 Supabase，登录后使用云端 perses_proxy。'
           );
         }
         const supabase = getSupabase();
@@ -105,8 +141,8 @@ export default function PersesScreen() {
         if (!sess.session) {
           return (
             '（未登录）\n' +
-            '请先到「我的」用邮箱 OTP 登录，再回来使用云端 perses_proxy；\n' +
-            '或在「我的」填写 Perses API URL 使用直连。'
+            '请先在「个人中心」用邮箱验证码登录后再使用云端 Perses；\n' +
+            '或填写 Perses Key 与接入地址使用直连。'
           );
         }
         const payload = await buildPersesRequestPayload(prompt);
@@ -117,30 +153,49 @@ export default function PersesScreen() {
         return text.trim();
       }
 
+      const urlForFetch = useKeyDirect ? endpointForBearer : storedHttp;
+      const dashScope = isDashScopeOpenAICompatibleUrl(urlForFetch);
+      const requestUrl = dashScope ? resolveDashScopeChatCompletionsUrl(urlForFetch) : urlForFetch;
+
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
       const timeout = setTimeout(() => controller.abort(), 20000);
       try {
         const payload = await buildPersesRequestPayload(prompt);
-        const res = await fetch(u, {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (useKeyDirect) {
+          headers.Authorization = `Bearer ${key}`;
+        }
+        const bodyJson = dashScope
+          ? JSON.stringify({
+              model: getDashScopeCompatibleModel(persesDashScopeModel),
+              messages: [{ role: 'user' as const, content: assemblePersesPromptFromPayload(payload) }],
+            })
+          : JSON.stringify(payload);
+        const res = await fetch(requestUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          headers,
+          body: bodyJson,
           signal: controller.signal,
         });
         if (!res.ok) return `（Perses 请求失败：HTTP ${res.status}）`;
         const data: any = await res.json().catch(() => null);
-        const text = data?.text ?? data?.answer ?? data?.message ?? '';
-        if (typeof text !== 'string' || !text.trim()) return '（Perses 返回为空：请检查接口返回字段 text/answer/message）';
+        const text = dashScope
+          ? (typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content : '')
+          : (data?.text ?? data?.answer ?? data?.message ?? '');
+        if (typeof text !== 'string' || !text.trim())
+          return dashScope
+            ? '（百炼返回为空：请检查模型名 EXPO_PUBLIC_PERSES_DASHSCOPE_MODEL 与账号权限）'
+            : '（Perses 返回为空：请检查接口返回字段 text/answer/message）';
         return text.trim();
       } catch (e: any) {
-        return e?.name === 'AbortError' ? '（Perses 请求超时/已取消）' : '（Perses 请求失败：请检查网络与接口地址）';
+        return e?.name === 'AbortError' ? '（Perses 请求超时/已取消）' : '（Perses 请求失败：请检查网络与密钥）';
       } finally {
         clearTimeout(timeout);
       }
     },
-    [apiUrl]
+    [persesApiKey, legacyPersesUrl, persesDashScopeModel]
   );
 
   const onSend = useCallback(async () => {
@@ -166,7 +221,11 @@ export default function PersesScreen() {
       void (async () => {
         try {
           const c = await loadPersistedConnectionSettings();
-          if (!cancelled) setApiUrl(c.persesApiUrl);
+          if (!cancelled) {
+            setPersesApiKey(c.persesApiKey);
+            setLegacyPersesUrl(c.persesApiUrl);
+            setPersesDashScopeModel(c.persesDashScopeModel ?? '');
+          }
         } catch {
           // ignore
         }
@@ -177,7 +236,6 @@ export default function PersesScreen() {
     }, [])
   );
 
-  // 键盘高度监听：保证底部输入区永远在键盘之上
   useEffect(() => {
     const showSub = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
@@ -197,100 +255,137 @@ export default function PersesScreen() {
     };
   }, [ensureKeyboard]);
 
+  const dockBottom = keyboardHeight > 0 ? keyboardHeight : 0;
+
   return (
     <View style={styles.root}>
+      <TabScreenHeader
+        title="Perses"
+        right={<HeaderOverflowButton label="记忆与人设" onPress={() => router.push('/perses-memory')} />}
+      />
+
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingBottom: 16 + dockHeight + keyboardHeight },
+          { paddingBottom: 12 + dockHeight + keyboardHeight },
         ]}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator
       >
-        <Text style={styles.title}>Perses</Text>
-        <Text style={styles.sub}>
-          提问→回复→编辑→一键加入 Quick Card。人设与记忆见下方入口（内置 SOUL / USER / MEMORY，可本地编辑并随请求一并发送）。
-        </Text>
-
-        <Pressable onPress={() => router.push('/perses-memory')} style={styles.memoryLink}>
-          <Text style={styles.memoryLinkText}>记忆与人设（SOUL / USER / MEMORY）</Text>
-        </Pressable>
-
-        <Pressable onPress={() => router.push('/(tabs)/profile')} style={styles.settingsLink}>
-          <Text style={styles.settingsLinkText}>Perses 直连地址与 Supabase：前往「我的」配置</Text>
-        </Pressable>
-
-        {apiUrl.trim() ? (
-          <Text style={styles.hint}>当前直连：{apiUrl.trim()}</Text>
-        ) : (
-          <Text style={styles.hint}>未设置直连地址时将尝试登录后的云端代理。</Text>
-        )}
-
         <View style={styles.thread}>
-          {messages.map((m) => (
-            <View key={m.id} style={[styles.bubble, m.role === 'user' ? styles.bubbleUser : styles.bubbleAi]}>
-              <Text style={[styles.bubbleRole, m.role === 'user' && styles.bubbleRoleUser]}>
-                {m.role === 'user' ? '你' : 'Perses'}
-              </Text>
-              <Text style={[styles.bubbleText, m.role === 'user' && styles.bubbleTextUser]}>{m.text}</Text>
-              {m.role === 'assistant' ? (
-                <Pressable onPress={() => openEditForMessage(m.id, m.text)} style={styles.smallBtn}>
-                  <Text style={styles.smallBtnText}>编辑并加入 Quick Card</Text>
-                </Pressable>
-              ) : null}
-            </View>
-          ))}
+          {messages.map((m) =>
+            m.role === 'user' ? (
+              <View key={m.id} style={[styles.msgRow, styles.msgRowUser]}>
+                <View style={[styles.bubble, styles.bubbleUser]}>
+                  <Text style={styles.bubbleTextUser}>{m.text}</Text>
+                </View>
+              </View>
+            ) : (
+              <View key={m.id} style={[styles.msgRow, styles.msgRowAssistant]}>
+                <View style={styles.assistantBundle}>
+                  <View style={[styles.bubble, styles.bubbleAi]}>
+                    <Text style={styles.bubbleTextAi}>{m.text}</Text>
+                  </View>
+                  <Pressable
+                    onPress={() => openEditForMessage(m.id, m.text)}
+                    style={({ pressed }) => [styles.assistantAction, pressed && styles.assistantActionPressed]}
+                    hitSlop={{ top: 6, bottom: 6, left: 8, right: 8 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="编辑后加入 Quick Card"
+                  >
+                    <Text style={styles.assistantActionText}>编辑 · 加入 Quick Card</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )
+          )}
 
           {sending ? (
-            <View style={[styles.bubble, styles.bubbleAi]}>
-              <Text style={styles.bubbleRole}>Perses</Text>
-              <View style={styles.row}>
-                <ActivityIndicator />
-                <Text style={styles.bubbleText}>思考中…</Text>
+            <View style={[styles.msgRow, styles.msgRowAssistant]}>
+              <View style={styles.assistantBundle}>
+                <View style={[styles.bubble, styles.bubbleAi, styles.bubbleAiThinking]}>
+                  <View style={styles.thinkingRow}>
+                    <ActivityIndicator size="small" color="#64748b" />
+                    <Text style={styles.thinkingText}>思考中…</Text>
+                  </View>
+                </View>
               </View>
             </View>
           ) : null}
         </View>
       </ScrollView>
 
-      <View style={[styles.dock, { bottom: keyboardHeight }]} onLayout={(e) => setDockHeight(e.nativeEvent.layout.height)}>
-        <TextInput
-          value={draft}
-          onChangeText={setDraft}
-          placeholder="向 Perses 提问…"
-          multiline
-          autoCorrect={false}
-          style={styles.dockInput}
-          onFocus={ensureKeyboard}
-        />
-        <Pressable onPress={onSend} disabled={!canSend} style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]}>
-          <Text style={styles.sendBtnText}>{sending ? '发送中…' : '发送'}</Text>
-        </Pressable>
+      <View
+        style={[
+          styles.dock,
+          {
+            bottom: dockBottom,
+          },
+        ]}
+        onLayout={(e) => setDockHeight(e.nativeEvent.layout.height)}
+      >
+        <View style={styles.dockComposer}>
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            placeholder="向Perses提问"
+            placeholderTextColor="#9ca3af"
+            multiline
+            autoCorrect={false}
+            style={styles.dockInput}
+            onFocus={ensureKeyboard}
+          />
+          <Pressable
+            onPress={onSend}
+            disabled={!canSend}
+            style={[styles.sendFab, !canSend && styles.sendFabDisabled]}
+            accessibilityRole="button"
+            accessibilityLabel="发送"
+          >
+            <Ionicons name="arrow-up" size={20} color="#fff" />
+          </Pressable>
+        </View>
       </View>
 
-      <Modal visible={editOpen} transparent animationType="fade" onRequestClose={closeEdit}>
-        <Pressable style={styles.modalMask} onPress={closeEdit} />
-        <View style={[styles.modalCard, { bottom: keyboardHeight }]}>
-          <Text style={styles.modalTitle}>编辑后加入 Quick Card</Text>
-          <Text style={styles.modalSub}>你可以把这段内容改成“一句话卡片”，然后一键入库。</Text>
-          <TextInput
-            value={editText}
-            onChangeText={setEditText}
-            placeholder="将要保存到 Quick Card 的内容"
-            multiline
-            style={styles.modalInput}
-            autoFocus
-          />
-          <View style={styles.modalActions}>
-            <Pressable onPress={closeEdit} disabled={editSaving} style={[styles.modalBtn, styles.modalBtnGhost]}>
-              <Text style={styles.modalBtnGhostText}>取消</Text>
-            </Pressable>
-            <Pressable onPress={saveQuickCard} disabled={editSaving} style={[styles.modalBtn, editSaving && styles.sendBtnDisabled]}>
-              <Text style={styles.modalBtnText}>{editSaving ? '保存中…' : '加入 Quick Card'}</Text>
-            </Pressable>
+      <Modal visible={editOpen} transparent animationType="fade" onRequestClose={closeEdit} statusBarTranslucent>
+        <View
+          style={[
+            styles.modalOverlay,
+            { paddingBottom: keyboardHeight > 0 ? keyboardHeight : 0 },
+          ]}
+        >
+          <Pressable style={styles.modalMaskFill} onPress={closeEdit} accessibilityLabel="关闭" />
+          <View style={[styles.modalCard, { maxHeight: Math.min(winH * 0.88, winH - keyboardHeight - 48) }]}>
+            <Text style={styles.modalTitle}>编辑后加入 Quick Card</Text>
+            <Text style={styles.modalSub}>你可以把这段内容改成「一句话卡片」，然后一键入库。</Text>
+            <TextInput
+              key={editOpen ? 'edit-field' : 'idle'}
+              value={editText}
+              onChangeText={setEditText}
+              placeholder="将要保存到 Quick Card 的内容"
+              placeholderTextColor="#9ca3af"
+              multiline
+              textAlignVertical="top"
+              scrollEnabled={modalInputH >= MODAL_INPUT_MAX_H - 1}
+              style={[styles.modalInput, { height: modalInputH }]}
+              onContentSizeChange={(e) => onModalInputContentSizeChange(e.nativeEvent.contentSize.height)}
+              autoFocus
+            />
+            <View style={styles.modalActions}>
+              <Pressable onPress={closeEdit} disabled={editSaving} style={[styles.modalBtn, styles.modalBtnGhost]}>
+                <Text style={styles.modalBtnGhostText}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={saveQuickCard}
+                disabled={editSaving}
+                style={[styles.modalBtn, styles.modalBtnPrimary, editSaving && styles.sendFabDisabled]}
+              >
+                <Text style={styles.modalBtnText}>{editSaving ? '保存中…' : '加入 Quick Card'}</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
@@ -299,120 +394,200 @@ export default function PersesScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#fff' },
+  root: { flex: 1, backgroundColor: '#f1f3f5' },
   scroll: { flex: 1 },
-  scrollContent: { padding: 16, flexGrow: 1 },
-  title: { fontSize: 24, fontWeight: '900', color: '#111827' },
-  sub: { marginTop: 8, fontSize: 13, lineHeight: 18, color: '#6b7280' },
-  memoryLink: {
-    marginTop: 12,
-    alignSelf: 'flex-start',
-    borderWidth: 1,
-    borderColor: '#111827',
-    borderRadius: 12,
-    paddingVertical: 10,
+  scrollContent: {
     paddingHorizontal: 14,
-    backgroundColor: '#f9fafb',
+    flexGrow: 1,
+    paddingTop: 10,
+    paddingBottom: 4,
+    backgroundColor: '#f1f3f5',
   },
-  memoryLinkText: { fontWeight: '900', color: '#111827', fontSize: 14 },
-  settingsLink: {
-    marginTop: 10,
+  thread: {
+    gap: 18,
+    paddingTop: 6,
+    paddingBottom: 12,
+  },
+  msgRow: { width: '100%', flexDirection: 'row' },
+  msgRowUser: { justifyContent: 'flex-end' },
+  msgRowAssistant: { justifyContent: 'flex-start' },
+  assistantBundle: {
+    maxWidth: '88%',
     alignSelf: 'flex-start',
-    paddingVertical: 6,
   },
-  settingsLinkText: { color: '#2563eb', fontWeight: '800', fontSize: 13 },
-  hint: { marginTop: 8, fontSize: 12, lineHeight: 17, color: '#6b7280' },
-  thread: { marginTop: 14, gap: 12 },
   bubble: {
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 14,
-    padding: 12,
-    gap: 8,
+    maxWidth: '100%',
+    borderRadius: 20,
+    paddingHorizontal: 15,
+    paddingVertical: 12,
   },
-  bubbleUser: { alignSelf: 'flex-end', backgroundColor: '#111827' },
-  bubbleAi: { alignSelf: 'flex-start', backgroundColor: '#fff' },
-  bubbleRole: { fontWeight: '900', color: '#6b7280' },
-  bubbleRoleUser: { color: 'rgba(255,255,255,0.85)' },
-  bubbleText: { fontSize: 14, lineHeight: 20, color: '#111827' },
-  bubbleTextUser: { color: '#fff' },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  smallBtn: {
+  bubbleUser: {
+    maxWidth: '82%',
+    backgroundColor: '#111827',
+    borderBottomRightRadius: 6,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.12,
+        shadowRadius: 6,
+      },
+      android: { elevation: 2 },
+    }),
+  },
+  bubbleAi: {
+    backgroundColor: '#ffffff',
+    borderBottomLeftRadius: 6,
+    borderWidth: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.07,
+        shadowRadius: 8,
+      },
+      android: { elevation: 2 },
+    }),
+  },
+  bubbleAiThinking: {
+    paddingVertical: 14,
+  },
+  bubbleTextUser: {
+    fontSize: 15,
+    lineHeight: 23,
+    color: '#fafafa',
+    letterSpacing: 0.15,
+  },
+  bubbleTextAi: {
+    fontSize: 15,
+    lineHeight: 23,
+    color: '#1e293b',
+    letterSpacing: 0.1,
+  },
+  thinkingRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  thinkingText: { fontSize: 14, lineHeight: 20, color: '#64748b', letterSpacing: 0.2 },
+  assistantAction: {
     alignSelf: 'flex-start',
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    backgroundColor: '#f9fafb',
+    marginTop: 8,
+    marginLeft: 2,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
   },
-  smallBtnText: { fontWeight: '900', color: '#111827', fontSize: 13 },
+  assistantActionPressed: { opacity: 0.65 },
+  assistantActionText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#475569',
+    letterSpacing: 0.2,
+  },
   dock: {
     position: 'absolute',
     left: 0,
     right: 0,
     bottom: 0,
-    borderTopWidth: 1,
-    borderTopColor: '#f3f4f6',
-    padding: 12,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
     backgroundColor: '#fff',
-    gap: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#e5e7eb',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.04,
+        shadowRadius: 6,
+      },
+      android: { elevation: 4 },
+    }),
+  },
+  dockComposer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 24,
+    paddingLeft: 16,
+    paddingRight: 6,
+    paddingVertical: 6,
+    backgroundColor: '#f8fafc',
+    gap: 8,
+    minHeight: 46,
   },
   dockInput: {
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    maxHeight: 140,
+    flex: 1,
+    maxHeight: 120,
+    paddingVertical: 8,
+    paddingRight: 4,
+    fontSize: 15,
+    lineHeight: 20,
     color: '#111827',
   },
-  sendBtn: {
+  sendFab: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: '#111827',
-    paddingVertical: 12,
-    borderRadius: 12,
+    justifyContent: 'center',
     alignItems: 'center',
+    marginBottom: 1,
   },
-  sendBtnDisabled: { opacity: 0.55 },
-  sendBtnText: { color: '#fff', fontWeight: '900' },
-  modalMask: {
+  sendFabDisabled: { opacity: 0.38 },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  modalMaskFill: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.35)',
+    backgroundColor: 'transparent',
   },
   modalCard: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    bottom: 0,
     backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
+    borderRadius: 22,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 16,
+    alignSelf: 'stretch',
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#e5e7eb',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.12,
+        shadowRadius: 24,
+      },
+      android: { elevation: 10 },
+    }),
   },
-  modalTitle: { fontSize: 16, fontWeight: '900', color: '#111827' },
-  modalSub: { marginTop: 6, fontSize: 12, lineHeight: 16, color: '#6b7280' },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+  modalSub: { marginTop: 8, fontSize: 13, lineHeight: 18, color: '#6b7280' },
+  /** 设计稿：浅蓝描边正文区，高度由 onContentSizeChange 在区间内伸缩 */
   modalInput: {
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    minHeight: 110,
-    maxHeight: 220,
+    marginTop: 14,
+    borderWidth: 1.5,
+    borderColor: '#93c5fd',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    lineHeight: 22,
     color: '#111827',
+    backgroundColor: '#fff',
   },
-  modalActions: { marginTop: 12, flexDirection: 'row', gap: 10 },
+  modalActions: { marginTop: 16, flexDirection: 'row', gap: 12 },
   modalBtn: {
     flex: 1,
-    backgroundColor: '#111827',
-    paddingVertical: 12,
-    borderRadius: 12,
+    paddingVertical: 13,
+    borderRadius: 14,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  modalBtnText: { color: '#fff', fontWeight: '900' },
-  modalBtnGhost: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e5e7eb' },
-  modalBtnGhostText: { color: '#111827', fontWeight: '900' },
+  modalBtnPrimary: { backgroundColor: '#111827' },
+  modalBtnText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  modalBtnGhost: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#d1d5db' },
+  modalBtnGhostText: { color: '#111827', fontWeight: '800', fontSize: 15 },
 });
-
