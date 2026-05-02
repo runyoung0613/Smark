@@ -33,6 +33,7 @@ export default function ImportScreen() {
   const maxBodyH = useMemo(() => Math.round(Math.min(winH * 0.48, 420)), [winH]);
 
   const scrollRef = useRef<ScrollView>(null);
+  const bodyInputRef = useRef<TextInput>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [mode, setMode] = useState<ImportMode>('link');
   /** 链接导入：仅在「从链接抓取并填充」成功后才显示标题、正文与保存。 */
@@ -120,7 +121,16 @@ export default function ImportScreen() {
       }
       setLinkFieldsVisible(true);
 
-      requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+      const scrollImportedEditorToStart = () => {
+        scrollRef.current?.scrollTo({ y: 0, animated: false });
+        bodyInputRef.current?.setNativeProps({ selection: { start: 0, end: 0 } });
+      };
+      requestAnimationFrame(() => {
+        scrollImportedEditorToStart();
+        if (Platform.OS === 'android') {
+          setTimeout(scrollImportedEditorToStart, 80);
+        }
+      });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e ?? '未知错误');
       Alert.alert('抓取失败', msg);
@@ -267,6 +277,7 @@ export default function ImportScreen() {
               <Text style={[styles.label, { marginTop: 16 }]}>正文</Text>
               <View style={[styles.bodyFrame, { height: bodyH }]}>
                 <TextInput
+                  ref={bodyInputRef}
                   value={content}
                   onChangeText={setContent}
                   placeholder="正文内容"

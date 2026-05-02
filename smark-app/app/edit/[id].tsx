@@ -1,21 +1,20 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  InteractionManager,
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
-  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { tabHeaderRowVerticalLayout, tabHeaderTapTargetSize } from '../../components/TabScreenChrome';
+import { tabHeaderTapTargetSize } from '../../components/TabScreenChrome';
 import {
   getArticle,
   softDeleteAllHighlightsForArticle,
@@ -25,9 +24,7 @@ import {
 
 export default function EditArticleScreen() {
   const insets = useSafeAreaInsets();
-  const { height: winH } = useWindowDimensions();
-  /** 正文编辑区固定可视高度，过长内容在框内滚动 */
-  const bodyEditorHeight = Math.round(Math.min(340, Math.max(220, winH * 0.36)));
+  const bodyInputRef = useRef<TextInput>(null);
 
   const { id } = useLocalSearchParams<{ id: string }>();
   const articleId = String(id ?? '');
@@ -58,6 +55,31 @@ export default function EditArticleScreen() {
       }
     })();
   }, [articleId]);
+
+  useEffect(() => {
+    if (loading) return;
+    let cancelled = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const scrollBodyToStart = () => {
+      if (cancelled) return;
+      bodyInputRef.current?.setNativeProps({ selection: { start: 0, end: 0 } });
+    };
+    const interaction = InteractionManager.runAfterInteractions(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        scrollBodyToStart();
+        const delays = Platform.OS === 'android' ? [80, 200, 450] : [32, 100, 220, 400];
+        for (const ms of delays) {
+          timers.push(setTimeout(scrollBodyToStart, ms));
+        }
+      });
+    });
+    return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+      interaction.cancel?.();
+    };
+  }, [loading, articleId]);
 
   function goBack() {
     if (router.canGoBack()) router.back();
@@ -160,11 +182,7 @@ export default function EditArticleScreen() {
         </View>
       </View>
 
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: bottomPad }]}
-      >
+      <View style={[styles.editBody, { paddingBottom: bottomPad }]}>
         <Text style={styles.fieldLabel}>标题</Text>
         <TextInput
           value={title}
@@ -177,6 +195,7 @@ export default function EditArticleScreen() {
 
         <Text style={[styles.fieldLabel, styles.fieldLabelSecond]}>正文</Text>
         <TextInput
+          ref={bodyInputRef}
           value={draft}
           onChangeText={setDraft}
           multiline
@@ -184,7 +203,7 @@ export default function EditArticleScreen() {
           editable={!loading}
           placeholder="正文内容，正文内容，正文内容"
           placeholderTextColor="#9ca3af"
-          style={[styles.fieldInputBody, { height: bodyEditorHeight }]}
+          style={styles.fieldInputBodyFlex}
           textAlignVertical="top"
         />
 
@@ -196,7 +215,7 @@ export default function EditArticleScreen() {
         >
           <Text style={styles.deleteLink}>删除此文章</Text>
         </Pressable>
-      </ScrollView>
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -242,7 +261,8 @@ const styles = StyleSheet.create({
     color: '#111827',
     textAlign: 'center',
   },
-  scrollContent: {
+  editBody: {
+    flex: 1,
     paddingHorizontal: 16,
     paddingTop: 20,
   },
@@ -264,7 +284,9 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     color: '#111827',
   },
-  fieldInputBody: {
+  fieldInputBodyFlex: {
+    flex: 1,
+    minHeight: 260,
     marginTop: 8,
     borderWidth: 1,
     borderColor: '#e5e7eb',
@@ -276,6 +298,6 @@ const styles = StyleSheet.create({
     color: '#111827',
     overflow: 'hidden',
   },
-  deleteLinkWrap: { marginTop: 32, alignItems: 'center' },
+  deleteLinkWrap: { marginTop: 16, alignItems: 'center' },
   deleteLink: { fontSize: 16, color: '#ef4444', fontWeight: '600' },
 });

@@ -40,9 +40,30 @@ export function TabScreenHeader({ title, left, right }: TabScreenHeaderProps) {
   );
 }
 
-export function HeaderPrimaryButton({ label, onPress }: { label: string; onPress: () => void }) {
+export function HeaderPrimaryButton({
+  label,
+  onPress,
+  disabled,
+  accessibilityLabel,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  /** 不传则用 `label` */
+  accessibilityLabel?: string;
+}) {
   return (
-    <Pressable onPress={onPress} style={styles.primaryBtn} accessibilityRole="button">
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityLabel={accessibilityLabel ?? label}
+      style={({ pressed }) => [
+        styles.primaryBtn,
+        disabled && styles.primaryBtnDisabled,
+        pressed && !disabled && styles.primaryBtnPressed,
+      ]}
+      accessibilityRole="button"
+    >
       <Text style={styles.primaryBtnText}>{label}</Text>
     </Pressable>
   );
@@ -129,6 +150,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     borderRadius: 10,
   },
+  primaryBtnDisabled: { opacity: 0.45 },
+  primaryBtnPressed: { opacity: 0.88 },
   primaryBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   overflowBtn: {
     paddingVertical: 4,

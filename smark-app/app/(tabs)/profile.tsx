@@ -583,7 +583,9 @@ export default function ProfileScreen() {
               <View style={styles.warnBox}>
                 <Text style={styles.warnTitle}>未检测到云服务配置</Text>
                 <Text style={styles.warnText}>
-                  登录与同步依赖 Supabase，需在构建应用时写入 EXPO_PUBLIC_SUPABASE_URL 与 EXPO_PUBLIC_SUPABASE_ANON_KEY（开发者维护）；终端用户无需在此填写。
+                  这条提示只说明：邮箱登录与云端同步需要 Supabase，安装包里未内置 EXPO_PUBLIC_SUPABASE_* 时无法使用这两项。导入文章、阅读、划线、复习、Quick Card、Perses 等均为本机 SQLite，与此无关，可照常使用。
+                  {'\n\n'}
+                  若需要登录/同步，需开发者在构建安装包时写入 EXPO_PUBLIC_SUPABASE_URL 与 EXPO_PUBLIC_SUPABASE_ANON_KEY；终端用户无需在此填写。
                 </Text>
               </View>
             ) : null}

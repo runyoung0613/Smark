@@ -1,21 +1,15 @@
-import { Feather, Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import type { ComponentProps } from 'react';
 import { StyleSheet } from 'react-native';
 
 type IonName = ComponentProps<typeof Ionicons>['name'];
-type FeatherName = ComponentProps<typeof Feather>['name'];
 
-/** 未选中用 Feather 细线描边，选中仍用 Ionicons 实心，避免 Ionicons outline 笔画偏粗。 */
-function tabIcon(feather: FeatherName, ionSolid: IonName) {
-  return ({ color, focused, size }: { color: string; focused: boolean; size: number }) => {
-    const s = Math.round(size);
-    return focused ? (
-      <Ionicons name={ionSolid} size={s} color={color} />
-    ) : (
-      <Feather name={feather} size={s} color={color} />
-    );
-  };
+/** 选中实心、未选中同形描边（`-outline`），颜色仍由 tabBar tint 提供。 */
+function tabIcon(solid: IonName, outline: IonName) {
+  return ({ color, focused, size }: { color: string; focused: boolean; size: number }) => (
+    <Ionicons name={focused ? solid : outline} size={Math.round(size)} color={color} />
+  );
 }
 
 export default function TabsLayout() {
@@ -39,7 +33,7 @@ export default function TabsLayout() {
         options={{
           title: '首页',
           tabBarLabel: '首页',
-          tabBarIcon: tabIcon('home', 'home'),
+          tabBarIcon: tabIcon('home', 'home-outline'),
         }}
       />
       <Tabs.Screen
@@ -47,7 +41,7 @@ export default function TabsLayout() {
         options={{
           title: '复习',
           tabBarLabel: '复习',
-          tabBarIcon: tabIcon('book-open', 'book'),
+          tabBarIcon: tabIcon('book', 'book-outline'),
         }}
       />
       <Tabs.Screen
@@ -55,7 +49,7 @@ export default function TabsLayout() {
         options={{
           title: 'Perses',
           tabBarLabel: 'Perses',
-          tabBarIcon: tabIcon('star', 'sparkles'),
+          tabBarIcon: tabIcon('sparkles', 'sparkles-outline'),
         }}
       />
       <Tabs.Screen
@@ -63,7 +57,7 @@ export default function TabsLayout() {
         options={{
           title: '我的',
           tabBarLabel: '我的',
-          tabBarIcon: tabIcon('user', 'person'),
+          tabBarIcon: tabIcon('person', 'person-outline'),
         }}
       />
     </Tabs>

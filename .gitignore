@@ -35,6 +35,17 @@ pnpm-debug.log*
 **/.env.*
 !**/.env.example
 
+# Firebase / Google 移动端配置（勿入库）
+**/google-services.json
+**/GoogleService-Info.plist
+
+# 云服务脚本常用账号密钥文件名（勿入库）
+**/serviceAccount*.json
+**/firebase-adminsdk*.json
+
+# direnv：可能通过 export 注入密钥或本机路径
+.envrc
+
 # 8) 原生工程与签名文件（默认不上传）
 **/android/
 **/ios/

@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { HeaderPrimaryButton } from '../../components/TabScreenChrome';
 import {
   createHighlight,
   deleteHighlight,
@@ -866,22 +867,14 @@ export default function ReadScreen() {
       <Stack.Screen
         options={{
           title,
+          headerRightContainerStyle: Platform.OS === 'android' ? { alignItems: 'center' } : undefined,
           headerRight: () => (
-            <Pressable
-              onPress={() => {
-                router.push({ pathname: '/edit/[id]', params: { id: articleId } });
-              }}
+            <HeaderPrimaryButton
+              label="列表"
+              accessibilityLabel="本文划线列表"
               disabled={loading}
-              style={({ pressed }) => [
-                styles.headerEditBtn,
-                loading && styles.headerEditBtnDisabled,
-                pressed && !loading && styles.headerEditBtnPressed,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="编辑正文"
-            >
-              <Text style={styles.headerEditBtnText}>编辑</Text>
-            </Pressable>
+              onPress={() => router.push({ pathname: '/highlights/[id]', params: { id: articleId } })}
+            />
           ),
         }}
       />
@@ -946,12 +939,12 @@ export default function ReadScreen() {
             </Pressable>
             <Pressable
               onPress={() => {
-                router.push({ pathname: '/highlights/[id]', params: { id: articleId } });
+                router.push({ pathname: '/edit/[id]', params: { id: articleId } });
               }}
               style={[styles.secondaryBtn, styles.bottomBarBtnSpacing, { borderColor: themeUi.barBorder }]}
               disabled={loading}
             >
-              <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>列表</Text>
+              <Text style={[styles.secondaryBtnText, { color: themeUi.barText }]}>编辑</Text>
             </Pressable>
           </View>
         </View>
@@ -1162,16 +1155,6 @@ export default function ReadScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  headerEditBtn: {
-    backgroundColor: '#111827',
-    paddingVertical: 7,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    marginRight: 4,
-  },
-  headerEditBtnDisabled: { opacity: 0.45 },
-  headerEditBtnPressed: { opacity: 0.88 },
-  headerEditBtnText: { color: '#fff', fontWeight: '800', fontSize: 15 },
   stage: { flex: 1, position: 'relative' },
   webFill: { ...StyleSheet.absoluteFillObject },
   progressOverlay: {

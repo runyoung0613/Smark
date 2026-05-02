@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   loadPersesMemoryFiles,
   resetPersesMemoryToBundledDefaults,
@@ -16,7 +20,41 @@ import {
 } from '../services/persesMemory';
 import { DEFAULT_MEMORY_MD, DEFAULT_SOUL_MD, DEFAULT_USER_MD } from '../services/persesBundled';
 
+type MemoryTab = 'soul' | 'user' | 'memory';
+
+const TAB_META: Record<
+  MemoryTab,
+  { short: string; title: string; hint: string; placeholder: string }
+> = {
+  soul: {
+    short: 'SOUL',
+    title: '灵魂与人格',
+    hint: '助手是谁、语气与边界（对应 SOUL.md）。',
+    placeholder: 'Perses 是谁、如何说话…',
+  },
+  user: {
+    short: 'USER',
+    title: '关于你',
+    hint: '你的称呼、偏好与禁忌（对应 USER.md）。',
+    placeholder: '称呼、偏好、禁忌…',
+  },
+  memory: {
+    short: 'MEMORY',
+    title: '长期记忆',
+    hint: '约定、里程碑与重要事实（对应 MEMORY.md）。',
+    placeholder: '约定、里程碑、重要事实…',
+  },
+};
+
 export default function PersesMemoryScreen() {
+  const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
+  const editorMinH = useMemo(
+    () => Math.round(Math.min(440, Math.max(240, winH * 0.4))),
+    [winH]
+  );
+
+  const [tab, setTab] = useState<MemoryTab>('soul');
   const [soulMd, setSoulMd] = useState('');
   const [userMd, setUserMd] = useState('');
   const [memoryMd, setMemoryMd] = useState('');
@@ -38,6 +76,17 @@ export default function PersesMemoryScreen() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  const activeText =
+    tab === 'soul' ? soulMd : tab === 'user' ? userMd : memoryMd;
+  const setActiveText = useCallback(
+    (next: string) => {
+      if (tab === 'soul') setSoulMd(next);
+      else if (tab === 'user') setUserMd(next);
+      else setMemoryMd(next);
+    },
+    [tab]
+  );
 
   const onSave = useCallback(async () => {
     setSaving(true);
@@ -70,6 +119,9 @@ export default function PersesMemoryScreen() {
     ]);
   }, []);
 
+  const padBottom = 20 + insets.bottom;
+  const meta = TAB_META[tab];
+
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -80,78 +132,174 @@ export default function PersesMemoryScreen() {
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-      <Text style={styles.title}>记忆与人设</Text>
-      <Text style={styles.sub}>对应 Perses 的 SOUL.md、USER.md、MEMORY.md，保存在本机。</Text>
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={[styles.content, { paddingBottom: padBottom }]}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        showsVerticalScrollIndicator
+      >
+        <View style={styles.introCard}>
+          <Text style={styles.introTitle}>三份 Markdown，仅存本机</Text>
+          <Text style={styles.introBody}>
+            切换上方标签编辑 SOUL / USER / MEMORY；保存会一次性写入三份文件。
+          </Text>
+        </View>
 
-      <View style={styles.actions}>
-        <Pressable onPress={onSave} disabled={saving} style={[styles.btn, styles.btnPrimary, saving && styles.btnDisabled]}>
-          <Text style={styles.btnPrimaryText}>{saving ? '保存中…' : '保存'}</Text>
-        </Pressable>
-        <Pressable onPress={onReset} disabled={saving} style={[styles.btn, styles.btnGhost]}>
-          <Text style={styles.btnGhostText}>恢复内置默认</Text>
-        </Pressable>
-      </View>
+        <View style={styles.segmentOuter}>
+          {(['soul', 'user', 'memory'] as const).map((key) => (
+            <Pressable
+              key={key}
+              onPress={() => setTab(key)}
+              style={[styles.segmentCell, tab === key && styles.segmentCellActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: tab === key }}
+              accessibilityLabel={TAB_META[key].title}
+            >
+              <Text style={[styles.segmentShort, tab === key && styles.segmentShortActive]} numberOfLines={1}>
+                {TAB_META[key].short}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
 
-      <Text style={styles.label}>SOUL.md — 灵魂与人格</Text>
-      <TextInput
-        value={soulMd}
-        onChangeText={setSoulMd}
-        multiline
-        textAlignVertical="top"
-        style={styles.input}
-        placeholder="Perses 是谁、如何说话…"
-      />
+        <View style={styles.sectionHead}>
+          <Text style={styles.sectionTitle}>{meta.title}</Text>
+          <Text style={styles.sectionHint}>{meta.hint}</Text>
+        </View>
 
-      <Text style={styles.label}>USER.md — 关于你</Text>
-      <TextInput
-        value={userMd}
-        onChangeText={setUserMd}
-        multiline
-        textAlignVertical="top"
-        style={styles.input}
-        placeholder="称呼、偏好、禁忌…"
-      />
+        <TextInput
+          value={activeText}
+          onChangeText={setActiveText}
+          multiline
+          textAlignVertical="top"
+          style={[styles.input, { minHeight: editorMinH }]}
+          placeholder={meta.placeholder}
+          placeholderTextColor="#9ca3af"
+        />
 
-      <Text style={styles.label}>MEMORY.md — 长期记忆</Text>
-      <TextInput
-        value={memoryMd}
-        onChangeText={setMemoryMd}
-        multiline
-        textAlignVertical="top"
-        style={[styles.input, styles.inputLast]}
-        placeholder="约定、里程碑、重要事实…"
-      />
-    </ScrollView>
+        <View style={styles.footerActions}>
+          <Pressable
+            onPress={onSave}
+            disabled={saving}
+            style={[styles.btnPrimary, saving && styles.btnDisabled]}
+            accessibilityRole="button"
+            accessibilityLabel="保存全部"
+          >
+            <Text style={styles.btnPrimaryText}>{saving ? '保存中…' : '保存全部'}</Text>
+          </Pressable>
+          <Pressable
+            onPress={onReset}
+            disabled={saving}
+            style={styles.btnGhost}
+            accessibilityRole="button"
+          >
+            <Text style={styles.btnGhostText}>恢复内置默认</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#fff' },
-  content: { padding: 16, paddingBottom: 32 },
+  flex: { flex: 1, backgroundColor: '#fff' },
+  scroll: { flex: 1 },
+  content: { paddingHorizontal: 16, paddingTop: 12 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12, backgroundColor: '#fff' },
   muted: { color: '#6b7280', fontSize: 14 },
-  title: { fontSize: 22, fontWeight: '900', color: '#111827' },
-  sub: { marginTop: 8, fontSize: 13, lineHeight: 18, color: '#6b7280' },
-  actions: { marginTop: 14, flexDirection: 'row', gap: 10 },
-  btn: { flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
-  btnPrimary: { backgroundColor: '#111827' },
-  btnGhost: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e5e7eb' },
-  btnDisabled: { opacity: 0.55 },
-  btnPrimaryText: { color: '#fff', fontWeight: '900' },
-  btnGhostText: { color: '#111827', fontWeight: '800' },
-  label: { marginTop: 18, fontSize: 14, fontWeight: '800', color: '#111827' },
-  input: {
-    marginTop: 8,
-    minHeight: 160,
-    maxHeight: 320,
-    borderWidth: 1,
+
+  introCard: {
+    backgroundColor: '#f9fafb',
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: '#e5e7eb',
+    padding: 14,
+    marginBottom: 16,
+  },
+  introTitle: { fontSize: 15, fontWeight: '800', color: '#111827' },
+  introBody: { marginTop: 6, fontSize: 13, lineHeight: 19, color: '#6b7280' },
+
+  segmentOuter: {
+    flexDirection: 'row',
+    padding: 3,
     borderRadius: 12,
-    padding: 12,
-    fontSize: 14,
-    lineHeight: 20,
+    backgroundColor: '#f3f4f6',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e5e7eb',
+    gap: 4,
+  },
+  segmentCell: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmentCellActive: {
+    backgroundColor: '#111827',
+  },
+  segmentShort: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#374151',
+    letterSpacing: 0.3,
+  },
+  segmentShortActive: {
+    color: '#fff',
+  },
+
+  sectionHead: {
+    marginTop: 18,
+    marginBottom: 10,
+  },
+  sectionTitle: {
+    fontSize: 17,
+    fontWeight: '800',
     color: '#111827',
   },
-  inputLast: { marginBottom: 8 },
+  sectionHint: {
+    marginTop: 4,
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#6b7280',
+  },
+
+  input: {
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    fontSize: 14,
+    lineHeight: 21,
+    color: '#111827',
+    backgroundColor: '#fafafa',
+  },
+
+  footerActions: {
+    marginTop: 22,
+    gap: 10,
+  },
+  btnPrimary: {
+    backgroundColor: '#111827',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  btnDisabled: { opacity: 0.55 },
+  btnPrimaryText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  btnGhost: {
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#fff',
+  },
+  btnGhostText: { color: '#374151', fontWeight: '700', fontSize: 14 },
 });

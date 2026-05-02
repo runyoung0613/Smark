@@ -1,8 +1,9 @@
 import 'react-native-gesture-handler';
 import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import * as Linking from 'expo-linking';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Platform, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { initDb } from '../services/db';
@@ -55,6 +56,7 @@ export default function RootLayout() {
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
         <SafeAreaProvider>
+          <StatusBar style="dark" />
           <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' }}>
             <ActivityIndicator size="large" />
           </View>
@@ -66,7 +68,8 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-      <Stack>
+      <StatusBar style="dark" />
+      <Stack screenOptions={Platform.OS === 'android' ? { statusBarStyle: 'dark' } : {}}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="import" options={{ headerShown: false }} />
         <Stack.Screen name="read/[id]" options={{ title: '阅读' }} />
